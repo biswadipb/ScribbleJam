@@ -114,7 +114,9 @@ function mentionOf(u) {
 // A rough measure of how much of the picture one operation is: the area of ink it laid down.
 const WIDTH_OF = { pencil: 0.5, marker: 1.4, brush: 1.8, highlighter: 2.2 }; // everything else: the size itself
 const FILL_WEIGHT = 30000;       // a bucket fill covers a lot, but how much is unknown here: count it as a decent chunk
-const MIN_SHARE = (Number(process.env.CREDIT_MIN_PERCENT) || 10) / 100; // a person must account for this share to be named
+// "Insignificant" means 10 against 90: someone who drew less than 10 for every 90 the biggest contributor drew is not named.
+const CREDIT_P = Number(process.env.CREDIT_MIN_PERCENT) || 10;
+const CREDIT_RATIO = CREDIT_P / (100 - CREDIT_P);   // 10/90 = 0.111 of the biggest contributor's amount
 const mirrorCount = (sym) => (sym === 3 ? 4 : sym ? 2 : 1);
 function inkOf(o) {
   if (o.k === 'stroke') {
@@ -135,26 +137,26 @@ function inkOf(o) {
 }
 
 // Who the picture is credited to ("Drawn by ..." on the image and in the caption).
-// Alone: the person who finished it. In a shared room: everyone whose share of what is on the canvas
-// is at least MIN_SHARE (10%), biggest contribution first. The bar stays 10% however many people join.
-// If nobody reaches it (many people each drawing a little), the three biggest contributors are named.
+// Alone: the person who finished it. In a shared room: everyone who drew at least 10 for every 90 that the
+// biggest contributor drew, biggest first. The test is relative to the leader, so it means the same
+// thing whether 2 or 12 people are drawing: with 2 people it works out to "at least 10% of the picture",
+// with 12 people a handful of small touches next to a big drawing still isn't enough, but 12 people who
+// each drew a fair part are all named. Nobody who drew nothing is ever named.
 function artists(token, finisher, mode) {
   const room = mode === 'together' ? rooms.get(token) : null;
   if (!room) return [finisher];
   const ink = new Map();
-  let total = 0;
   for (const o of room.ops) {
     const w = inkOf(o);
-    if (w > 0) { ink.set(o.u, (ink.get(o.u) || 0) + w); total += w; }
+    if (w > 0) ink.set(o.u, (ink.get(o.u) || 0) + w);
   }
-  if (!total) { // only moves / erasing so far: whoever touched it
+  if (!ink.size) { // only moves / erasing so far: whoever touched it
     const who = [...new Set(room.ops.map((o) => o.u))].map((id) => room.users.get(id)).filter(Boolean);
     return who.length ? who : [finisher];
   }
   const ranked = [...ink.entries()].sort((x, y) => y[1] - x[1]);
-  let chosen = ranked.filter(([, w]) => w / total >= MIN_SHARE);
-  if (!chosen.length) chosen = ranked.slice(0, 3);
-  const list = chosen.map(([id]) => room.users.get(id)).filter(Boolean);
+  const lead = ranked[0][1];
+  const list = ranked.filter(([, w]) => w >= lead * CREDIT_RATIO).map(([id]) => room.users.get(id)).filter(Boolean);
   return list.length ? list : [finisher];
 }
 
