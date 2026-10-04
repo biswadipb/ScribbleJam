@@ -68,19 +68,34 @@ const tgApi = bot ? bot.api : DEV ? {
   sendDocument: async (chat, _f, o) => console.log('DEV sendDocument', JSON.stringify(o.caption)),
 } : null;
 
-if (bot) {
-  bot.command(['draw', 'start'], async (ctx) => {
-    const token = makeToken(ctx.chat.id);
-    const link = (m) => `https://t.me/${bot.botInfo.username}/${MINIAPP_SHORT}?startapp=${m}_${token}`;
-    await ctx.reply('🎨 How do you want to draw?', {
-      reply_markup: {
-        inline_keyboard: [[
-          { text: '✏️ Draw alone', url: link('s') },
-          { text: '👥 Draw together', url: link('t') },
-        ]],
-      },
+// Where the Mini App page lives (GitHub Pages never sleeps). Private chats open it with a web_app
+// button, which has no sleepy-server wait and no choice to make: a DM is always a one-person canvas.
+const WEBAPP_URL = (process.env.WEBAPP_URL || 'https://biswadipb.github.io/ScribbleJam/').replace(/\/?$/, '/');
+
+async function sendDrawPrompt(ctx) {
+  if (ctx.chat.type === 'private') {
+    await ctx.reply('🎨 Tap to start drawing. When you finish, the picture comes back to this chat.', {
+      reply_markup: { inline_keyboard: [[{ text: '🎨 Start drawing', web_app: { url: `${WEBAPP_URL}?p=s_me` } }]] },
     });
+    return;
+  }
+  // groups: choose between drawing alone or together
+  const token = makeToken(ctx.chat.id);
+  const link = (m) => `https://t.me/${bot.botInfo.username}/${MINIAPP_SHORT}?startapp=${m}_${token}`;
+  await ctx.reply('🎨 How do you want to draw?', {
+    reply_markup: {
+      inline_keyboard: [[
+        { text: '✏️ Draw alone', url: link('s') },
+        { text: '👥 Draw together', url: link('t') },
+      ]],
+    },
   });
+}
+
+if (bot) {
+  bot.command(['draw', 'start'], sendDrawPrompt);
+  // in a DM, any message gets the drawing button (people don't always know to type /draw)
+  bot.on('message', (ctx) => (ctx.chat.type === 'private' ? sendDrawPrompt(ctx) : undefined));
 }
 
 // ---------- Captions ----------
@@ -121,7 +136,7 @@ const fullName = (u) => realName(u) || u.username || `User ${u.id}`;
 async function handleExport(body) {
   const user = verifyInitData(body.initData);
   if (!user) return [401, { error: 'bad initData' }];
-  const session = getSession(body.token);
+  const session = body.token === 'me' ? { chatId: user.id } : getSession(body.token);
   if (!session) return [410, { error: 'This drawing session expired. Send /draw again.' }];
   const m = /^data:image\/(png|jpeg);base64,(.+)$/.exec(body.png || '');
   if (!m) return [400, { error: 'image required' }];
@@ -219,7 +234,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const body = await readJson(req, 100_000);
         const user = verifyInitData(body.initData);
-        if (!user || !getSession(body.token)) [status, out] = [401, { error: 'bad session' }];
+        if (!user || !(body.token === 'me' || getSession(body.token))) [status, out] = [401, { error: 'bad session' }];
         else { const list = artists(body.token, user, body.mode); out = { names: list.map(fullName), tags: list.map((u) => mentionOf(u).text) }; }
       } catch { [status, out] = [400, { error: 'bad request' }]; }
       res.writeHead(status, { 'content-type': 'application/json' });
@@ -439,6 +454,9 @@ server.listen(PORT, async () => {
   if (PUBLIC_URL) {
     await bot.api.setWebhook(`${PUBLIC_URL}/tg/${webhookSecret}`);
     await bot.api.setMyCommands([{ command: 'draw', description: 'Start a drawing' }]);
+    try { // the "Draw" button next to the message box in every DM opens the canvas directly
+      await bot.api.setChatMenuButton({ menu_button: { type: 'web_app', text: '🎨 Draw', web_app: { url: `${WEBAPP_URL}?p=s_me` } } });
+    } catch (e) { console.warn('menu button not set:', e.description || e.message); }
     console.log('webhook set');
   } else console.warn('PUBLIC_URL is not set - webhook not registered');
 });

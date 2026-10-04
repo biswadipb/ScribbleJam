@@ -18,7 +18,8 @@ const octx = ov.getContext('2d');
 // ---------- session ----------
 // start_param looks like "t_<token>" (together) or "s_<token>" (alone).
 // For local testing outside Telegram: /?p=t_abc
-const param = tg?.initDataUnsafe?.start_param || new URLSearchParams(location.search).get('p') || 's_dev';
+// opened without a start parameter inside Telegram (the DM menu button): a private one-person canvas
+const param = tg?.initDataUnsafe?.start_param || new URLSearchParams(location.search).get('p') || (tg?.initData ? 's_me' : 's_dev');
 const mode = param[0] === 't' ? 'together' : 'solo';
 const token = param.slice(2);
 const initData = tg?.initData || 'dev';
