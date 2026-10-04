@@ -21,18 +21,27 @@ const MAX_PEOPLE = Number(process.env.MAX_PEOPLE) || 12; // people drawing in on
 const SIZES = new Set(['square', 'portrait', 'landscape', 'wide', 'story']);
 const MAX_PTS = 20000; // numbers per stroke
 
-// Session tokens are signed and self-contained ("<chat>x<nonce>x<sig>"), so they keep working
-// after Render restarts the service. Only the live canvas (rooms) is held in memory.
+// Session tokens are signed and self-contained, so they keep working after Render restarts the service.
+//   alone / DM:        <chat>x<nonce>x<sig>
+//   drawing together:  <chat>x<nonce><o|c><hostId>x<sig>   o = open (anyone may join), c = closed (needs approval)
+// The open/closed choice and the host are inside the signed part, so a link can't be edited to change them.
+// Only the live canvas (rooms) is held in memory.
 const sign = (s) => crypto.createHmac('sha256', BOT_TOKEN || 'dev').update(s).digest('base64url').slice(0, 10);
-function makeToken(chatId) {
-  const body = `${String(chatId).replace('-', 'n')}x${rand(4)}`;
+function makeToken(chatId, policy = '', hostId = 0) {
+  const body = `${String(chatId).replace('-', 'n')}x${rand(4)}${policy ? policy + hostId : ''}`;
   return `${body}x${sign(body)}`;
 }
 function getSession(token) {
-  const m = /^((n?\d+)x[0-9a-f]{8})x([A-Za-z0-9_-]{10})$/.exec(token || '');
-  if (!m || sign(m[1]) !== m[3]) return DEV && token ? { chatId: 0 } : null;
-  return { chatId: Number(m[2].replace('n', '-')) };
+  const m = /^((n?\d+)x([0-9a-f]{8})(?:([oc])(\d+))?)x([A-Za-z0-9_-]{10})$/.exec(token || '');
+  if (m && sign(m[1]) === m[6]) return { chatId: Number(m[2].replace('n', '-')), policy: m[4] === 'c' ? 'c' : 'o', hostId: m[5] ? Number(m[5]) : 0 };
+  if (DEV && token) { // local testing: any token works; "closed<hostId>" makes a closed room
+    const d = /^closed(\d+)$/.exec(token);
+    return { chatId: 0, policy: d ? 'c' : 'o', hostId: d ? Number(d[1]) : 0 };
+  }
+  return null;
 }
+// A pass lets someone who was let into a closed room come back (after a disconnect or a server restart) without asking again.
+const passFor = (token, uid) => crypto.createHmac('sha256', 'pass:' + (BOT_TOKEN || 'dev')).update(`${token}:${uid}`).digest('base64url').slice(0, 22);
 // token -> { ops, bg, clients:Set }
 const rooms = new Map();
 // id -> { buf, exp }  short-lived PNGs for story sharing
@@ -92,17 +101,31 @@ async function sendDrawPrompt(ctx) {
     }
     return;
   }
-  // groups: choose between drawing alone or together
-  const token = makeToken(ctx.chat.id);
-  const link = (m) => `https://t.me/${bot.botInfo.username}/${MINIAPP_SHORT}?startapp=${m}_${token}`;
-  await ctx.reply('🎨 How do you want to draw?', {
-    reply_markup: {
-      inline_keyboard: [[
-        { text: '✏️ Draw alone', url: link('s') },
-        { text: '👥 Draw together', url: link('t') },
-      ]],
-    },
-  });
+  // groups
+  await ctx.reply(...groupPrompt(ctx.chat.id));
+}
+
+// ---- group flow: Draw alone / Draw together -> Open or Closed -> "Join active session" ----
+const activeSessions = new Map();          // chat id -> the drawing-together session currently on offer there
+const SESSION_KEEP_MS = 12 * 3600_000;
+const sessionLink = (m, token) => `https://t.me/${bot.botInfo.username}/${MINIAPP_SHORT}?startapp=${m}_${token}`;
+const policyIcon = (p) => (p === 'c' ? '🔒' : '🔓');
+const personName = (u) => [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username || 'Someone';
+
+function groupPrompt(chatId) {
+  const rows = [];
+  const act = activeSessions.get(chatId);
+  if (act && Date.now() - act.at < SESSION_KEEP_MS) {
+    rows.push([{ text: `🎨 Join active session ${policyIcon(act.policy)}`, url: sessionLink('t', act.token) }]);
+  } else activeSessions.delete(chatId);
+  rows.push([
+    { text: '✏️ Draw alone', url: sessionLink('s', makeToken(chatId)) },
+    { text: '👥 Draw together', callback_data: 'sj:together' },
+  ]);
+  const text = act && rows.length > 1
+    ? `🎨 A drawing is open (started by ${act.host}, ${act.policy === 'c' ? 'closed 🔒' : 'open 🔓'}). Join it, or start something new:`
+    : '🎨 How do you want to draw?';
+  return [text, { reply_markup: { inline_keyboard: rows } }];
 }
 
 if (bot) {
@@ -112,6 +135,34 @@ if (bot) {
     console.error('bot error while handling an update:', status.lastError);
   });
   bot.command(['draw', 'start'], sendDrawPrompt);
+
+  // "Draw together" asks who may join
+  bot.callbackQuery('sj:together', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    await ctx.editMessageText('👥 Who can join this drawing?\n\n🔓 Open group: anyone in the chat can join.\n🔒 Closed group: people ask to join, and someone already drawing lets them in.', {
+      reply_markup: { inline_keyboard: [
+        [{ text: '🔓 Open group', callback_data: 'sj:open' }, { text: '🔒 Closed group', callback_data: 'sj:closed' }],
+        [{ text: '↩️ Back', callback_data: 'sj:back' }],
+      ] },
+    }).catch((e) => console.warn('could not edit the prompt:', e.description || e.message));
+  });
+  bot.callbackQuery('sj:back', async (ctx) => {
+    await ctx.answerCallbackQuery().catch(() => {});
+    const [text, extra] = groupPrompt(ctx.chat.id);
+    await ctx.editMessageText(text, extra).catch(() => {});
+  });
+  // the person who chooses becomes the host of the session
+  bot.callbackQuery(['sj:open', 'sj:closed'], async (ctx) => {
+    const policy = ctx.callbackQuery.data === 'sj:closed' ? 'c' : 'o';
+    const host = personName(ctx.from);
+    const token = makeToken(ctx.chat.id, policy, ctx.from.id);
+    activeSessions.set(ctx.chat.id, { token, policy, host, at: Date.now() });
+    await ctx.answerCallbackQuery({ text: policy === 'c' ? 'Closed session started - tap Join active session' : 'Open session started - tap Join active session' }).catch(() => {});
+    await ctx.editMessageText(
+      `👥 ${host} started a drawing together\n${policy === 'c' ? '🔒 Closed: you ask to join and someone drawing lets you in.' : '🔓 Open: anyone here can jump in.'}`,
+      { reply_markup: { inline_keyboard: [[{ text: '🎨 Join active session', url: sessionLink('t', token) }]] } },
+    ).catch((e) => console.warn('could not post the session:', e.description || e.message));
+  });
   // in a DM, any message gets the drawing button (people don't always know to type /draw)
   bot.on('message', (ctx) => (ctx.chat.type === 'private' ? sendDrawPrompt(ctx) : undefined));
 }
@@ -357,7 +408,7 @@ server.on('upgrade', (req, socket, head) => {
   const user = verifyInitData(url.searchParams.get('initData'));
   const token = url.searchParams.get('token');
   if (!user || !getSession(token)) return socket.destroy();
-  wss.handleUpgrade(req, socket, head, (ws) => onConnect(ws, user, token));
+  wss.handleUpgrade(req, socket, head, (ws) => onConnect(ws, user, token, url.searchParams.get('pass')));
 });
 
 function broadcast(room, msg, except) {
@@ -429,14 +480,41 @@ function cleanOp(o, layers) {
   }
 }
 
-function onConnect(ws, user, token) {
+const publicUser = (u) => ({ id: u.id, name: fullName(u), username: u.username || '' });
+const MAX_PENDING = 10;
+
+function onConnect(ws, user, token, pass) {
+  const session = getSession(token);
   let room = rooms.get(token);
   if (!room) {
     rooms.set(token, (room = {
       ops: [], layers: [newLayer('L1', 'Layer 1')], redo: new Map(), bg: '#ffffff', size: 'square',
       clients: new Set(), users: new Map(), version: 0, posted: -1, touched: false, lastSeen: Date.now(),
+      policy: session.policy, hostId: session.hostId, approved: new Set(), pending: new Map(),
     }));
   }
+  ws.on('error', (e) => console.warn('websocket client error:', e?.message || e)); // e.g. a frame that is too big
+  // Closed room: the host walks in; anyone who was let in before comes back with their pass; everyone else asks.
+  const mayEnter = room.policy !== 'c' || user.id === room.hostId || room.approved.has(user.id) || (pass && pass === passFor(token, user.id));
+  if (mayEnter) { if (room.policy === 'c') room.approved.add(user.id); return joinRoom(ws, user, token, room); }
+  return askToEnter(ws, user, token, room);
+}
+
+// Someone is at the door of a closed room: tell the people inside and wait for a yes or no.
+function askToEnter(ws, user, token, room) {
+  if (room.pending.size >= MAX_PENDING && !room.pending.has(user.id)) { ws.send(JSON.stringify({ t: 'busy' })); return ws.close(); }
+  const earlier = room.pending.get(user.id);
+  if (earlier) { try { earlier.ws.close(); } catch {} }
+  room.pending.set(user.id, { ws, user });
+  ws.send(JSON.stringify({ t: 'waiting', someoneInside: room.clients.size > 0 }));
+  broadcast(room, { t: 'joinreq', user: publicUser(user) });
+  ws.on('message', () => {}); // nothing is accepted from someone who is not in yet
+  ws.on('close', () => {
+    if (room.pending.get(user.id)?.ws === ws) { room.pending.delete(user.id); broadcast(room, { t: 'joinreq-cancel', id: user.id }); }
+  });
+}
+
+function joinRoom(ws, user, token, room) {
   if (room.clients.size >= MAX_PEOPLE) { // keep the free server healthy: a room holds MAX_PEOPLE people
     ws.send(JSON.stringify({ t: 'roomfull', max: MAX_PEOPLE }));
     return ws.close();
@@ -448,13 +526,14 @@ function onConnect(ws, user, token) {
   ws.send(JSON.stringify({
     t: 'init', ops: room.ops, layers: room.layers, bg: room.bg, size: room.size, peers: room.clients.size,
     fresh: !room.touched, users: [...room.users.values()].map(signUser),
+    policy: room.policy, pending: [...room.pending.values()].map((p) => publicUser(p.user)),
+    invite: bot?.botInfo ? `https://t.me/${bot.botInfo.username}/${MINIAPP_SHORT}?startapp=t_${token}` : null,
   }));
   broadcast(room, { t: 'peers', n: room.clients.size });
   broadcast(room, { t: 'user', user: signUser(user) }, ws);
 
   const findOp = (id) => { for (let i = room.ops.length - 1; i >= 0; i--) if (room.ops[i].id === id) return room.ops[i]; return null; };
 
-  ws.on('error', (e) => console.warn('websocket client error:', e?.message || e)); // e.g. a frame that is too big
   ws.on('message', (raw) => {
     let m; try { m = JSON.parse(raw); } catch { return; }
     if (!m || typeof m !== 'object') return;
@@ -530,6 +609,19 @@ function onConnect(ws, user, token) {
       case 'clear': room.touched = true; room.version++; room.ops = []; room.redo = new Map(); broadcast(room, { t: 'clear' }); break;
       case 'bg': if (m.bg === 'transparent' || /^#[0-9a-fA-F]{6}$/.test(m.bg)) { room.bg = m.bg; room.touched = true; room.version++; broadcast(room, { t: 'bg', bg: m.bg }); } break;
       case 'size': if (SIZES.has(m.size)) { room.size = m.size; room.touched = true; room.version++; broadcast(room, { t: 'size', size: m.size }); } break;
+      case 'admit': { // a member lets a waiting person in (ok: true) or turns them away
+        const p = room.pending.get(m.id);
+        if (!p) return;
+        room.pending.delete(m.id);
+        broadcast(room, { t: 'joinreq-cancel', id: m.id }); // settled: remove the question from everyone's screen
+        p.ws.removeAllListeners('message'); p.ws.removeAllListeners('close');
+        if (m.ok === true) {
+          room.approved.add(m.id);
+          p.ws.send(JSON.stringify({ t: 'admitted', pass: passFor(token, m.id) }));
+          joinRoom(p.ws, p.user, token, room);
+        } else { p.ws.send(JSON.stringify({ t: 'declined' })); p.ws.close(); }
+        break;
+      }
       case 'layer': {
         const L = room.layers; room.touched = true;
         if (m.act === 'add') {

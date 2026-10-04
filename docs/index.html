@@ -84,10 +84,12 @@
   #wrap { transform-origin: 0 0; touch-action: none; }
   #wrap canvas { position: relative; }
   #ov { position: absolute !important; inset: 0; pointer-events: none; }
-  .bar { overflow-x: auto; padding-right: 22px; } /* keeps Finish clear of Telegram's close button above it */
-  .bar button { flex: none; padding: 8px 10px; position: relative; }
+  .bar { overflow-x: auto; padding: 8px 22px 8px 8px; gap: 4px; } /* right padding keeps Finish clear of Telegram's close button above it */
+  #share { position: sticky; right: 0; z-index: 2; } /* Finish is always reachable, even on a narrow phone */
+  .bar button { flex: none; padding: 8px 8px; position: relative; }
+  #inviteBtn { background: #e8f1ff; color: #1f6fe0; font-weight: 600; }
   .bar small { font-size: 10px; margin-left: 2px; color: var(--hint); }
-  .bar .primary { padding: 8px 14px; }
+  .bar .primary { padding: 8px 12px; }
   .tool { flex: none; min-width: 58px; }
   .tool.on { outline: 2px solid var(--accent); }
   .tool small { white-space: nowrap; }
@@ -119,6 +121,12 @@
   #pkPrev { width: 40px; height: 40px; border-radius: 10px; flex: none; border: 2px solid var(--bg2); }
   #hexIn, #textIn, #fontSel { font: inherit; color: var(--text); background: var(--bg2); border: 0; border-radius: 10px; padding: 10px; width: 100%; }
   .sheet button.primary { text-align: center; }
+  #joinbar { position: absolute; left: 8px; right: 8px; top: 8px; display: grid; gap: 6px; z-index: 7; }
+  #joinbar[hidden] { display: none; }
+  .jrow { background: var(--bg); border-radius: 12px; padding: 8px 10px; display: flex; gap: 6px; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+  .jrow .jname { flex: 1; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .jrow button { padding: 6px 10px; flex: none; }
+  #bootmsg { white-space: pre-line; }
   .dlg { align-items: center; justify-content: center; z-index: 40; }
   .dlg .card { width: min(92vw, 360px); border-radius: 16px; padding-bottom: 14px; }
   #dText { color: var(--hint); font-size: 14px; }
@@ -136,6 +144,7 @@
     <button id="clear" title="Clear everything">🗑️</button>
     <button id="layersBtn" title="Layers">📚<small id="layerCount">1</small></button>
     <button id="bg" title="Canvas size and colour">🖼️</button>
+    <button id="inviteBtn" title="Invite people" hidden>➕</button>
     <span class="sp"></span>
     <span class="badge" id="mode"></span>
     <button id="share" class="primary">Finish ✓</button>
@@ -143,6 +152,7 @@
   <div id="stage">
     <div id="wrap"><canvas id="cv" width="1024" height="1024"></canvas><canvas id="ov" width="1024" height="1024"></canvas></div>
     <button id="zoomReset" title="Reset zoom" hidden>⤢ Fit</button>
+    <div id="joinbar" hidden></div>
     <div id="selbar" hidden>
       <button id="selAll">Select all</button><button id="selRotL" title="Rotate left">⟲</button><button id="selRotR" title="Rotate right">⟳</button>
       <button id="selSmall" title="Smaller">−</button><button id="selBig" title="Bigger">＋</button>
@@ -198,6 +208,13 @@
   <input id="dInput" maxlength="20" hidden>
   <div class="row"><button id="dCancel">Cancel</button><button id="dOk" class="primary" style="flex:1">OK</button></div>
 </div></div>
+<div id="isheet" class="sheet"><div class="card">
+  <h3>Invite people ➕</h3>
+  <div id="inviteText" class="hintline"></div>
+  <button data-act="share" class="primary">Share in Telegram…</button>
+  <button data-act="copy">Copy link</button>
+  <button data-act="done">Close</button>
+</div></div>
 <div id="lsheet" class="sheet"><div class="card">
   <h3>Layers 📚</h3>
   <div id="layerList"></div>
@@ -226,6 +243,7 @@
   <div id="boottag">draw with your friends ✏️</div>
   <div id="bootmsg">Loading…</div>
   <button id="bootRetry" hidden>Try again</button>
+  <button id="bootClose" hidden>Close</button>
 </div></div>
 <div id="toast"></div>
 <script src="config.js"></script>

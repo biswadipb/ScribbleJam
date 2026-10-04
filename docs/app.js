@@ -23,8 +23,7 @@ const param = tg?.initDataUnsafe?.start_param || new URLSearchParams(location.se
 const mode = param[0] === 't' ? 'together' : 'solo';
 const token = param.slice(2);
 const initData = tg?.initData || 'dev';
-$('#mode').textContent = mode === 'together' ? '👥 together' : '';
-$('#mode').hidden = mode !== 'together';
+$('#mode').hidden = true;
 
 // ---------- state ----------
 const ops = [];                                   // everything drawn, in order (shared in a room)
@@ -456,7 +455,9 @@ function redo() {
 function connect() {
   const base = new URL(API || location.origin);
   const proto = base.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${base.host}/ws?token=${token}&initData=${encodeURIComponent(initData)}`);
+  let pass = '';
+  try { pass = localStorage.getItem('sj1pass:' + token) || ''; } catch {}
+  ws = new WebSocket(`${proto}://${base.host}/ws?token=${token}&initData=${encodeURIComponent(initData)}${pass ? '&pass=' + encodeURIComponent(pass) : ''}`);
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.t === 'init') {
@@ -465,7 +466,10 @@ function connect() {
       const mine = ops.length ? { ops: ops.map((o) => JSON.parse(JSON.stringify(o, (k, v) => (k[0] === '_' ? undefined : v)))), layers: layers.map((l) => ({ ...l })), bg, size: sizeKey, users: [...signedUsers.values()] } : savedDrawing;
       ops.length = 0; ops.push(...m.ops); layers = m.layers; ensureActive();
       for (const x of m.users || []) signedUsers.set(x.u.id, x);
+      policy = m.policy === 'c' ? 'c' : 'o'; inviteLink = m.invite || null;
+      for (const u of m.pending || []) addJoinReq(u);
       setBg(m.bg, false); sizeKey = ''; setCanvasSize(m.size || 'square', false); peers(m.peers); renderLayersUI();
+      hideBoot();
       if (m.fresh && mine?.ops?.length) { // the server has no copy (it slept or restarted): offer ours
         saveEnabled = false; // keep our saved copy untouched until the server has answered
         send({ t: 'restore', ops: mine.ops, layers: mine.layers, bg: mine.bg, size: mine.size, users: mine.users || [] });
@@ -483,7 +487,14 @@ function connect() {
       const i = ops.findIndex((o) => o.id === m.id);
       if (i >= 0) { const [o] = ops.splice(i, 1); liveOps.delete(o); delete o._cv; renderLayer(o.l); compose(); }
       toast('This drawing is full - clear it or delete a layer to keep drawing');
-    } else if (m.t === 'roomfull') { roomFull = true; toast(`This drawing already has ${m.max} people - try again in a bit`); } else if (m.t === 'op') {
+    } else if (m.t === 'roomfull') { roomFull = true; bootNote(`This drawing already has ${m.max} people.\nTry again in a bit.`, true); }
+    else if (m.t === 'waiting') bootNote(m.someoneInside ? '🔒 This drawing is closed.\nWaiting for someone to let you in…' : '🔒 This drawing is closed.\nNobody is in it right now - waiting for the host…', true);
+    else if (m.t === 'admitted') { try { localStorage.setItem('sj1pass:' + token, m.pass); } catch {} bootNote('You are in! Opening the drawing…'); }
+    else if (m.t === 'declined') { roomFull = true; bootNote('😕 Not this time.\nAsk the people drawing to let you in.', true); }
+    else if (m.t === 'busy') { roomFull = true; bootNote('Lots of people are waiting at the door.\nTry again in a minute.', true); }
+    else if (m.t === 'joinreq') addJoinReq(m.user);
+    else if (m.t === 'joinreq-cancel') removeJoinReq(m.id);
+    else if (m.t === 'op') {
       ops.push(m.op);
       if (m.op.k === 'stroke') { startLive(m.op); compose(); } else { bakeOp(m.op); compose(); }
     } else if (m.t === 'pts') {
@@ -505,7 +516,9 @@ function connect() {
   };
   ws.onclose = () => { if (roomFull) return; toast('Disconnected - reconnecting…'); setTimeout(connect, 1500); };
 }
-function peers(n) { $('#mode').textContent = `👥 ${n} drawing`; }
+let policy = 'o', inviteLink = null;
+// the number of people drawing lives on the Invite button, which keeps the top bar short
+function peers(n) { $('#inviteBtn').textContent = `➕ ${n}${policy === 'c' ? '🔒' : ''}`; $('#inviteBtn').title = `${n} drawing - invite more people`; }
 function ensureActive() { if (!layerById(activeLayer)) activeLayer = layers[layers.length - 1].id; }
 
 // ---------- input: drawing, zoom, pan ----------
@@ -838,6 +851,51 @@ function ask({ title = '', text = '', ok = 'OK', cancel = 'Cancel', input = null
     if (input !== null) setTimeout(() => { inp.focus(); inp.select(); }, 50);
   });
 }
+
+// ----- people asking to join a closed drawing -----
+const joinBar = $('#joinbar');
+function addJoinReq(u) {
+  if (joinBar.querySelector(`[data-id="${u.id}"]`)) return;
+  const row = document.createElement('div');
+  row.className = 'jrow'; row.dataset.id = u.id;
+  row.innerHTML = '<span class="jname"></span><button class="primary" data-ok="1">Let in</button><button data-ok="0">Decline</button>';
+  row.querySelector('.jname').textContent = `${u.name} wants to join`;
+  row.addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (!b) return;
+    send({ t: 'admit', id: u.id, ok: b.dataset.ok === '1' });
+    removeJoinReq(u.id);
+  });
+  joinBar.appendChild(row); joinBar.hidden = false;
+}
+function removeJoinReq(id) {
+  joinBar.querySelector(`[data-id="${id}"]`)?.remove();
+  joinBar.hidden = !joinBar.children.length;
+}
+
+// ----- inviting people -----
+const isheet = $('#isheet');
+$('#inviteBtn').hidden = mode !== 'together';
+$('#inviteBtn').addEventListener('click', () => {
+  if (!inviteLink) return toast('The invite link is not ready yet');
+  $('#inviteText').textContent = policy === 'c'
+    ? '🔒 This drawing is closed: people you invite ask to join, and someone drawing lets them in.'
+    : '🔓 This drawing is open: anyone who gets the link can join.';
+  isheet.classList.add('show');
+});
+isheet.addEventListener('click', async (e) => {
+  const act = e.target.dataset.act;
+  if (e.target === isheet || act === 'done') return isheet.classList.remove('show');
+  if (act === 'share') {
+    const text = policy === 'c' ? 'Come draw with me on ScribbleJam! (someone drawing will let you in)' : 'Come draw with me on ScribbleJam!';
+    const url = `https://t.me/share/url?url=${encodeURIComponent(inviteLink)}&text=${encodeURIComponent(text)}`;
+    isheet.classList.remove('show');
+    if (tg?.openTelegramLink) tg.openTelegramLink(url); else window.open(url, '_blank');
+  } else if (act === 'copy') {
+    isheet.classList.remove('show');
+    try { await navigator.clipboard.writeText(inviteLink); toast('Invite link copied'); }
+    catch { await ask({ title: 'Copy this link', input: inviteLink, ok: 'Done' }); }
+  }
+});
 
 // ----- undo / redo / clear -----
 $('#undo').addEventListener('click', undo);
@@ -1208,8 +1266,17 @@ async function start() {
   $('#bootmsg').textContent = 'Loading…';
   const ok = await ready;
   if (!ok) { $('#bootmsg').textContent = 'The server is taking a long nap 😴'; $('#bootRetry').hidden = false; return; }
-  connect();
-  boot.classList.add('out'); setTimeout(() => boot.classList.remove('show', 'out'), 400);
+  connect(); // the splash stays until the server lets us in (see hideBoot, called on 'init')
+  setTimeout(() => { if (gate === 'connecting') { bootNote('Still trying to connect…'); $('#bootRetry').hidden = false; } }, 20000);
 }
+let gate = 'connecting'; // connecting -> waiting (closed room) -> in
+function hideBoot() { gate = 'in'; boot.classList.add('out'); setTimeout(() => boot.classList.remove('show', 'out'), 400); }
+// a message on the splash, with a Close button when there is nothing more to wait for
+function bootNote(text, closable = false) {
+  if (closable && text.startsWith('🔒')) gate = 'waiting';
+  boot.classList.remove('out'); boot.classList.add('show');
+  $('#bootmsg').textContent = text; $('#bootRetry').hidden = true; $('#bootClose').hidden = !closable;
+}
+$('#bootClose').addEventListener('click', () => { if (tg?.close) tg.close(); else history.back(); });
 $('#bootRetry').addEventListener('click', () => { ready = ping().then((ok) => (serverUp = ok)); start(); });
 start();

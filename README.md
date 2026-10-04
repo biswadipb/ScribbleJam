@@ -59,3 +59,10 @@ The amount is measured as area of ink: strokes by length x width, shapes by outl
 
 ## When the bot does not answer
 Open `https://<your-service>.onrender.com/status`. It shows only yes/no facts: `botStarted`, `webhookSet`, `publicUrlSet`, `miniAppShortSet`, `updatesReceived` (messages Telegram has delivered since the server started) and `lastError`. If `publicUrlSet` is false the webhook was never registered (set `PUBLIC_URL` on Render); if `webhookSet` is true but `updatesReceived` stays 0 after you message the bot, Telegram cannot reach the server.
+
+## Drawing together: open and closed groups
+- `/draw` in a group shows **Draw alone** and **Draw together**. **Draw together** asks **🔓 Open group** or **🔒 Closed group**, then the bot posts a message with a **🎨 Join active session** button. Later `/draw` messages show that button too (for 12 hours).
+- **Open:** anyone who taps the button joins straight away.
+- **Closed:** the host (whoever chose "Closed") walks in. Everyone else sees a waiting screen, and the people already drawing get "<name> wants to join: Let in / Decline". Any member can answer. People who were let in get a signed pass stored on their phone, so they can come back (even after the server restarts) without asking again. At most 10 people can wait at the door.
+- The open/closed choice and the host are part of the signed link, so a link cannot be edited to change them.
+- Inside a shared drawing, **➕** (with the number of people, and a lock for closed groups) shares the invite link via Telegram or copies it.
