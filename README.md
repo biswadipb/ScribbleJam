@@ -34,13 +34,13 @@ Draw-alone opens instantly (the server wakes in the background); draw-together s
 The app uses its own dialogs instead of the browser's `confirm()` / `prompt()` boxes, because those print the page's web address.
 
 ## Drawing tools
-- **Brushes:** pencil, ink pen, marker, soft brush, airbrush, chalk, highlighter and an eraser, each with its own size and opacity. Pen pressure is used when the device reports it.
-- **Also:** paint bucket, colour picker (eyedropper), line / rectangle / ellipse (outline or filled), text, and a rectangle **Select** tool to move, rotate and scale part of a layer.
+- **Pen** (very thin to very thick, size 1-100), **Eraser**, soft **Brush**, **Airbrush**, **Chalk** and **Highlighter**, each with its own size and opacity. Pen pressure is used when the device reports it.
+- **Bucket** fill (lines stop it even when they are thin or soft, and gaps up to about 4 px in an outline are closed, so finger-drawn shapes hold the colour), **Pick colour** (eyedropper), and **Line / Rectangle / Ellipse** (outline or filled).
 - **Layers** (up to 8): add, hide, reorder, rename, delete, per-layer opacity and blend mode (normal, multiply, screen, overlay, darken, lighten). They sync live in a shared room.
-- **Mirror drawing** (left/right, up/down, both), stroke **smoothing**, undo / **redo**, and **pinch to zoom / pan** (a *Fit* button resets the view).
-- **Colours:** 12 quick slots plus a full colour picker (colour square + hue) that remembers your recent colours.
-- Everything drawn is a list of operations (`stroke`, `fill`, `shape`, `text`, `move`), each tagged with its layer; the server validates every operation before relaying it.
-- Layer blend modes are applied on top of the canvas colour at export time only approximately: the canvas colour sits behind all layers, so e.g. *screen* over a white canvas is not identical to a paint app that treats the background as a layer.
+- **Mirror drawing** (left/right, up/down, both), stroke **smoothing**, undo / **redo**, **pinch to zoom / pan** and a **rotate** button (quarter turns, view only; *Fit* resets the view).
+- **Colours:** 12 quick slots plus a full colour picker (colour square + hue) that remembers your recent colours. **Clear the whole drawing** lives in the Canvas panel.
+- The Mini App turns off Telegram's swipe-down-to-minimise gesture (`disableVerticalSwipes`), so a downward stroke does not minimise the app.
+- Everything drawn is a list of operations (`stroke`, `fill`, `shape`), each tagged with its layer; the server validates every operation before relaying it. Drawings made with the old Pencil / Marker tools still draw the same.
 
 ## Private chats (DMs)
 Writing to the bot in a DM (or pressing its **🎨 Draw** menu button) goes straight to a one-person canvas: no alone/together choice. The finished picture is sent back to that DM. This uses a `web_app` button, so it needs no BotFather setup. The page is served from `WEBAPP_URL` (defaults to the GitHub Pages site; set the env var on Render to use another host).
@@ -51,11 +51,11 @@ Writing to the bot in a DM (or pressing its **🎨 Draw** menu button) goes stra
 - Rooms that nobody has entered for 24 hours are dropped from server memory.
 
 ## Limits
-- A shared room holds **12 people** at once (`MAX_PEOPLE` env var) and **3000 operations** (strokes, fills, shapes, text, moves). People are told when a drawing is full.
+- A shared room holds **12 people** at once (`MAX_PEOPLE` env var) and **3000 operations** (strokes, fills, shapes). People are told when a drawing is full.
 
 ## Who is named in "Drawn by"
 In a shared drawing a person is named if they drew at least **10 for every 90** that the biggest contributor drew (`CREDIT_MIN_PERCENT`), biggest first. The test is relative to the leader, so it means the same thing with 2 or 12 people: with two people it works out to about 10% of the picture, and with 12 people a few small touches next to a big drawing still don't count, while 12 people who each drew a fair part are all named. Someone who drew nothing (only erased, moved things, or pressed Finish) is never named.
-The amount is measured as area of ink: strokes by length x width, shapes by outline (plus area when filled), text by size, a bucket fill counts as a fixed chunk; erasing and moving count for nothing. Undoing your strokes lowers your amount.
+The amount is measured as area of ink: strokes by length x width, shapes by outline (plus area when filled), a bucket fill counts as a fixed chunk; erasing counts for nothing. Undoing your strokes lowers your amount.
 
 ## When the bot does not answer
 Open `https://<your-service>.onrender.com/status`. It shows only yes/no facts: `botStarted`, `webhookSet`, `publicUrlSet`, `miniAppShortSet`, `updatesReceived` (messages Telegram has delivered since the server started) and `lastError`. If `publicUrlSet` is false the webhook was never registered (set `PUBLIC_URL` on Render); if `webhookSet` is true but `updatesReceived` stays 0 after you message the bot, Telegram cannot reach the server.

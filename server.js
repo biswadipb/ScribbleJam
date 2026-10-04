@@ -199,7 +199,6 @@ function inkOf(o) {
     const outline = (o.shape === 'line' ? Math.hypot(dx, dy) : 2 * (dx + dy)) * o.size;
     return (outline + (o.f && o.shape !== 'line' ? dx * dy : 0)) * mirrorCount(o.sym);
   }
-  if (o.k === 'text') return o.text.length * o.size * o.size * 0.5;
   if (o.k === 'fill') return FILL_WEIGHT;
   return 0; // moves don't add anything
 }
@@ -418,7 +417,6 @@ function broadcast(room, msg, except) {
 
 // ---- what a drawing operation may contain (everything from clients is validated) ----
 const TOOLS = new Set(['pencil', 'pen', 'marker', 'brush', 'airbrush', 'chalk', 'highlighter', 'eraser']);
-const FONTS = new Set(['sans', 'serif', 'mono', 'hand']);
 const SHAPES = new Set(['line', 'rect', 'ellipse']);
 const BLENDS = new Set(['source-over', 'multiply', 'screen', 'overlay', 'darken', 'lighten']);
 const MAX_LAYERS = 8;
@@ -467,14 +465,6 @@ function cleanOp(o, layers) {
       return {
         ...base, shape: o.shape, x1: num(o.x1, -300, 3300, 0), y1: num(o.y1, -300, 3300, 0), x2: num(o.x2, -300, 3300, 0), y2: num(o.y2, -300, 3300, 0),
         color: colour(o.color), size: num(o.size, 1, 200, 6), op: num(o.op, 0.02, 1, 1), f: !!o.f, sym: num(o.sym | 0, 0, 3, 0),
-      };
-    case 'text':
-      if (typeof o.text !== 'string' || !o.text.trim()) return null;
-      return { ...base, text: o.text.slice(0, 200), x: num(o.x, -300, 3300, 0), y: num(o.y, -300, 3300, 0), color: colour(o.color), size: num(o.size, 6, 400, 40), font: FONTS.has(o.font) ? o.font : 'sans', op: num(o.op, 0.02, 1, 1) };
-    case 'move':
-      return {
-        ...base, x: num(o.x, 0, 3000, 0), y: num(o.y, 0, 3000, 0), w: num(o.w, 1, 3000, 1), h: num(o.h, 1, 3000, 1),
-        tx: num(o.tx, -3000, 3000, 0), ty: num(o.ty, -3000, 3000, 0), s: num(o.s, 0.05, 20, 1), r: num(o.r, -50, 50, 0),
       };
     default: return null;
   }
