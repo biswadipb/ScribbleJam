@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { Bot, InputFile, webhookCallback } from 'grammy';
 import { WebSocketServer } from 'ws';
 
-const { BOT_TOKEN, PUBLIC_URL, MINIAPP_SHORT, PORT = 3000, DEV } = process.env;
+const { BOT_TOKEN, MINIAPP_SHORT, PORT = 3000, DEV } = process.env;
+const PUBLIC_URL = (process.env.PUBLIC_URL || '').trim().replace(/\/+$/, ''); // no trailing slash, whatever was typed
 if (!BOT_TOKEN && !DEV) {
   console.error('BOT_TOKEN is required (or set DEV=1 to run without Telegram)');
   process.exit(1);
@@ -63,6 +64,8 @@ function verifyInitData(initData) {
 
 // ---------- Bot ----------
 const bot = BOT_TOKEN ? new Bot(BOT_TOKEN) : null;
+// What /status reports: only yes/no facts and counters, nothing secret.
+const status = { botStarted: false, webhookSet: false, menuButtonSet: false, publicUrlSet: !!PUBLIC_URL, miniAppShortSet: !!MINIAPP_SHORT, updatesReceived: 0, lastUpdateAt: 0, lastError: null };
 // In DEV (no token) sends are just logged, so the Finish flow can be tested without Telegram.
 const tgApi = bot ? bot.api : DEV ? {
   sendPhoto: async (chat, _f, o) => console.log('DEV sendPhoto', JSON.stringify(o.caption)),
@@ -101,7 +104,11 @@ async function sendDrawPrompt(ctx) {
 }
 
 if (bot) {
-  bot.catch((err) => console.error('bot error while handling an update:', err.error?.description || err.error?.message || err.message));
+  bot.use((ctx, next) => { status.updatesReceived++; status.lastUpdateAt = Date.now(); return next(); });
+  bot.catch((err) => {
+    status.lastError = err.error?.description || err.error?.message || err.message;
+    console.error('bot error while handling an update:', status.lastError);
+  });
   bot.command(['draw', 'start'], sendDrawPrompt);
   // in a DM, any message gets the drawing button (people don't always know to type /draw)
   bot.on('message', (ctx) => (ctx.chat.type === 'private' ? sendDrawPrompt(ctx) : undefined));
@@ -310,6 +317,11 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (url.pathname === '/healthz') { res.writeHead(200); return res.end('ok'); }
+    if (url.pathname === '/status') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      const { lastUpdateAt, ...rest } = status;
+      return res.end(JSON.stringify({ ...rest, secondsSinceLastUpdate: lastUpdateAt ? Math.round((Date.now() - lastUpdateAt) / 1000) : null }));
+    }
 
     let rel = url.pathname === '/' ? '/index.html' : url.pathname;
     const file = path.join(PUBLIC_DIR, path.normalize(rel));
@@ -545,15 +557,22 @@ setInterval(() => {
 server.listen(PORT, async () => {
   console.log(`listening on :${PORT}`);
   if (!bot) return;
-  await bot.init();
-  console.log(`bot @${bot.botInfo.username}`);
-  if (!MINIAPP_SHORT) console.warn('MINIAPP_SHORT is not set - create the Mini App in @BotFather (/newapp) and set it');
-  if (PUBLIC_URL) {
+  try {
+    await bot.init();
+    status.botStarted = true;
+    console.log(`bot @${bot.botInfo.username}`);
+    if (!MINIAPP_SHORT) console.warn('MINIAPP_SHORT is not set - create the Mini App in @BotFather (/newapp) and set it');
+    if (!PUBLIC_URL) { console.warn('PUBLIC_URL is not set - webhook NOT registered, so Telegram will never reach this bot'); return; }
     await bot.api.setWebhook(`${PUBLIC_URL}/tg/${webhookSecret}`);
+    status.webhookSet = true;
     await bot.api.setMyCommands([{ command: 'draw', description: 'Start a drawing' }]);
     try { // the "Draw" button next to the message box in every DM opens the canvas directly
       await bot.api.setChatMenuButton({ menu_button: { type: 'web_app', text: '🎨 Draw', web_app: { url: `${WEBAPP_URL}?p=s_me` } } });
+      status.menuButtonSet = true;
     } catch (e) { console.warn('menu button not set:', e.description || e.message); }
     console.log('webhook set');
-  } else console.warn('PUBLIC_URL is not set - webhook not registered');
+  } catch (e) {
+    status.lastError = e.description || e.message;
+    console.error('startup problem:', status.lastError);
+  }
 });

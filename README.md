@@ -56,3 +56,6 @@ Writing to the bot in a DM (or pressing its **🎨 Draw** menu button) goes stra
 ## Who is named in "Drawn by"
 In a shared drawing a person is named if they drew at least **10 for every 90** that the biggest contributor drew (`CREDIT_MIN_PERCENT`), biggest first. The test is relative to the leader, so it means the same thing with 2 or 12 people: with two people it works out to about 10% of the picture, and with 12 people a few small touches next to a big drawing still don't count, while 12 people who each drew a fair part are all named. Someone who drew nothing (only erased, moved things, or pressed Finish) is never named.
 The amount is measured as area of ink: strokes by length x width, shapes by outline (plus area when filled), text by size, a bucket fill counts as a fixed chunk; erasing and moving count for nothing. Undoing your strokes lowers your amount.
+
+## When the bot does not answer
+Open `https://<your-service>.onrender.com/status`. It shows only yes/no facts: `botStarted`, `webhookSet`, `publicUrlSet`, `miniAppShortSet`, `updatesReceived` (messages Telegram has delivered since the server started) and `lastError`. If `publicUrlSet` is false the webhook was never registered (set `PUBLIC_URL` on Render); if `webhookSet` is true but `updatesReceived` stays 0 after you message the bot, Telegram cannot reach the server.
