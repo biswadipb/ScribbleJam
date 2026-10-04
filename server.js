@@ -476,6 +476,9 @@ function cleanOp(o, layers) {
         ...base, shape: o.shape, x1: num(o.x1, -300, 3300, 0), y1: num(o.y1, -300, 3300, 0), x2: num(o.x2, -300, 3300, 0), y2: num(o.y2, -300, 3300, 0),
         color: colour(o.color), size: num(o.size, 1, 200, 6), op: num(o.op, 0.02, 1, 1), f: !!o.f, sym: num(o.sym | 0, 0, 3, 0), ...(cleanMir(o.mir) ? { mir: cleanMir(o.mir) } : {}),
       };
+    case 'edit': // moves a shape that was drawn earlier (the shape keeps its place in the layer order)
+      if (typeof o.t !== 'string' || !o.t || o.t.length > 16) return null;
+      return { ...base, t: o.t, x1: num(o.x1, -300, 3300, 0), y1: num(o.y1, -300, 3300, 0), x2: num(o.x2, -300, 3300, 0), y2: num(o.y2, -300, 3300, 0) };
     default: return null;
   }
 }

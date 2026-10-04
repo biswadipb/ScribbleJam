@@ -36,6 +36,9 @@ let tool = 'pen', prevTool = 'pen';
 let color = '#000000';
 let mirrorLines = [];                             // dotted mirror lines you placed, each [x1, y1, x2, y2] (up to 3)
 let mirrorOn = false;
+let mirrorSel = -1;                               // the mirror line you tapped (its dots can be dragged)
+let selShape = null;                              // the line / rectangle / ellipse you tapped, shown with handles
+const SHAPE_TOOLS = new Set(['line', 'rect', 'ellipse']);
 let smooth = 0;                                   // stroke smoothing 0..10
 let fillShapes = false;
 let ws = null;
@@ -256,18 +259,23 @@ function paintShape(op, c) {
 }
 
 // ---- bucket fill ----
-// Lines stop the fill even when they are thin or soft, and gaps up to about 4 px in an outline are closed
-// (finger-drawn shapes are rarely perfectly closed). It is plain integer maths, so every participant
-// ends up with the same pixels.
-const GAP = 2;
-function growMask(m, r) { // make every wall pixel r pixels fatter
-  const mid = new Uint8Array(W * H), out = new Uint8Array(W * H);
+// Lines stop the fill even when thin or soft. A finger rarely closes a shape perfectly, so if the colour would leak
+// out to the edge of the canvas, gaps in the outline are bridged, trying the smallest bridge first, and the fill
+// keeps the first size that makes the area enclosed. It is plain integer maths over the layer's own pixels, so every
+// participant ends up with exactly the same result.
+const GAP_LADDER = [5, 10, 18, 30];   // bridges gaps up to 10, 20, 36, 60 canvas pixels
+// grow (dilate) or shrink (erode) a 0/1 mask by r pixels with a box window; cost does not depend on r
+function boxMask(m, r, dilate) {
+  const mid = new Uint8Array(W * H), out = new Uint8Array(W * H), pre = new Int32Array(Math.max(W, H) + 1);
   for (let y = 0; y < H; y++) {
-    const row = y * W;
-    for (let x = 0; x < W; x++) if (m[row + x]) { for (let k = Math.max(0, x - r), e = Math.min(W - 1, x + r); k <= e; k++) mid[row + k] = 1; }
+    const row = y * W; pre[0] = 0;
+    for (let x = 0; x < W; x++) pre[x + 1] = pre[x] + m[row + x];
+    for (let x = 0; x < W; x++) { const lo = Math.max(0, x - r), hi = Math.min(W - 1, x + r), s = pre[hi + 1] - pre[lo]; mid[row + x] = dilate ? (s > 0 ? 1 : 0) : (s === hi - lo + 1 ? 1 : 0); }
   }
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) if (mid[y * W + x]) { for (let k = Math.max(0, y - r), e = Math.min(H - 1, y + r); k <= e; k++) out[k * W + x] = 1; }
+  for (let x = 0; x < W; x++) {
+    pre[0] = 0;
+    for (let y = 0; y < H; y++) pre[y + 1] = pre[y] + mid[y * W + x];
+    for (let y = 0; y < H; y++) { const lo = Math.max(0, y - r), hi = Math.min(H - 1, y + r), s = pre[hi + 1] - pre[lo]; out[y * W + x] = dilate ? (s > 0 ? 1 : 0) : (s === hi - lo + 1 ? 1 : 0); }
   }
   return out;
 }
@@ -280,46 +288,85 @@ function floodFill(lc, x0, y0, hex) {
   const [fr, fg, fb] = hexToRgb(hex);
   const clear = ta < 10;               // tapping empty space (fill up to the lines) or tapping an existing colour (recolour it)
   const block = new Uint8Array(n);
-  if (clear) { for (let i = 0; i < n; i++) if (d[i * 4 + 3] >= 40) block[i] = 1; }
+  let walls0 = 0;
+  if (clear) { for (let i = 0; i < n; i++) if (d[i * 4 + 3] >= 40) { block[i] = 1; walls0++; } }
   else {
     for (let i = 0; i < n; i++) { const j = i * 4; if (Math.abs(d[j] - tr) + Math.abs(d[j + 1] - tg_) + Math.abs(d[j + 2] - tb) + Math.abs(d[j + 3] - ta) > 60) block[i] = 1; }
   }
-  const walls = clear ? growMask(block, GAP) : block;
-  let seed = y0 * W + x0;
-  if (walls[seed]) { // tapped right next to a line: use the closest free spot
-    seed = -1;
-    for (let r = 1; r <= GAP + 4 && seed < 0; r++) for (let dy = -r; dy <= r && seed < 0; dy++) for (let dx = -r; dx <= r; dx++) {
-      const x = x0 + dx, y = y0 + dy;
-      if (x >= 0 && y >= 0 && x < W && y < H && !walls[y * W + x]) { seed = y * W + x; break; }
-    }
-    if (seed < 0) return;
-  }
-  const seen = new Uint8Array(n), stack = new Int32Array(1 << 21);
-  let sp = 0; stack[sp++] = seed;
-  while (sp > 0) { // fill whole rows at a time
-    const i = stack[--sp];
-    if (seen[i] || walls[i]) continue;
-    const y = (i / W) | 0, row = y * W;
-    let l = i - row, r = l;
-    while (l > 0 && !walls[row + l - 1] && !seen[row + l - 1]) l--;
-    while (r < W - 1 && !walls[row + r + 1] && !seen[row + r + 1]) r++;
-    for (let x = l; x <= r; x++) seen[row + x] = 1;
-    for (const yy of [y - 1, y + 1]) {
-      if (yy < 0 || yy >= H) continue;
-      const rr = yy * W; let run = false;
-      for (let x = l; x <= r; x++) {
-        const free = !walls[rr + x] && !seen[rr + x];
-        if (free && !run) { if (sp < stack.length) stack[sp++] = rr + x; run = true; } else if (!free) run = false;
+  const stack = new Int32Array(1 << 21);
+  const touchesEdge = (seen) => {
+    for (let x = 0; x < W; x++) if (seen[x] || seen[(H - 1) * W + x]) return true;
+    for (let y = 0; y < H; y++) if (seen[y * W] || seen[y * W + W - 1]) return true;
+    return false;
+  };
+  const floodFrom = (walls, seeds) => { // everything reachable from these start points without crossing a wall
+    const seen = new Uint8Array(n); let sp = 0, area = 0;
+    for (const s of seeds) if (sp < stack.length) stack[sp++] = s;
+    while (sp > 0) { // fill whole rows at a time
+      const i = stack[--sp];
+      if (seen[i] || walls[i]) continue;
+      const y = (i / W) | 0, row = y * W;
+      let l = i - row, r = l;
+      while (l > 0 && !walls[row + l - 1] && !seen[row + l - 1]) l--;
+      while (r < W - 1 && !walls[row + r + 1] && !seen[row + r + 1]) r++;
+      for (let x = l; x <= r; x++) seen[row + x] = 1;
+      area += r - l + 1;
+      for (const yy of [y - 1, y + 1]) {
+        if (yy < 0 || yy >= H) continue;
+        const rr = yy * W; let run = false;
+        for (let x = l; x <= r; x++) {
+          const free = !walls[rr + x] && !seen[rr + x];
+          if (free && !run) { if (sp < stack.length) stack[sp++] = rr + x; run = true; } else if (!free) run = false;
+        }
       }
     }
+    return { seen, area };
+  };
+  const flood = (walls) => { // the area reachable from the tap (null if the tap is walled in)
+    let seed = y0 * W + x0;
+    if (walls[seed]) { // tapped right next to a line: use the closest free spot
+      seed = -1;
+      for (let r = 1; r <= 6 && seed < 0; r++) for (let dy = -r; dy <= r && seed < 0; dy++) for (let dx = -r; dx <= r; dx++) {
+        const x = x0 + dx, y = y0 + dy;
+        if (x >= 0 && y >= 0 && x < W && y < H && !walls[y * W + x]) { seed = y * W + x; break; }
+      }
+      if (seed < 0) return null;
+    }
+    return floodFrom(walls, [seed]);
+  };
+  // is there a properly closed shape anywhere on this layer? (free space that the canvas edge cannot reach)
+  const closedShapeExists = () => {
+    const edge = [];
+    for (let x = 0; x < W; x++) { if (!block[x]) edge.push(x); if (!block[(H - 1) * W + x]) edge.push((H - 1) * W + x); }
+    for (let y = 1; y < H - 1; y++) { if (!block[y * W]) edge.push(y * W); if (!block[y * W + W - 1]) edge.push(y * W + W - 1); }
+    return n - walls0 - floodFrom(block, edge).area > 400;
+  };
+  let result = flood(block);
+  if (!result) return null;
+  let bridged = 0;
+  if (clear && walls0 > 0 && touchesEdge(result.seen)) { // it leaks: close small gaps in the outline, smallest first
+    for (const r of GAP_LADDER) {
+      const attempt = flood(boxMask(boxMask(block, r, true), r, false));
+      if (!attempt) break;               // a bigger bridge would only swallow the tapped spot
+      if (!touchesEdge(attempt.seen)) { result = attempt; bridged = r; break; }
+    }
   }
-  const paint = clear ? growMask(seen, GAP + 1) : seen;   // colour right up to the lines, underneath them
+  let paint = result.seen;
+  if (clear) { // also colour just under the line edges (never beyond a line into empty space)
+    const grown = boxMask(result.seen, 2, true);
+    paint = new Uint8Array(n);
+    for (let i = 0; i < n; i++) if (result.seen[i] || (grown[i] && d[i * 4 + 3] > 0)) paint[i] = 1;
+  }
   for (let i = 0; i < n; i++) {
     if (!paint[i]) continue;
     const j = i * 4, al = d[j + 3] / 255;                   // keep antialiased line edges on top of the fill
     d[j] = d[j] * al + fr * (1 - al); d[j + 1] = d[j + 1] * al + fg * (1 - al); d[j + 2] = d[j + 2] * al + fb * (1 - al); d[j + 3] = 255;
   }
   lc.putImageData(img, 0, 0);
+  const enclosed = !touchesEdge(result.seen);
+  // only a layer with NO closed shape means "that outline was meant to be closed and is not"
+  const leaked = clear && !enclosed && walls0 > 0 && result.area > n * 0.25 && !closedShapeExists();
+  return { area: result.area, enclosed, bridged, hadWalls: walls0 > 0, leaked };
 }
 
 // where a stroke/shape can have put pixels (so replays only touch that area)
@@ -336,28 +383,42 @@ function opBBox(op) {
   return [Math.max(0, Math.floor(x0 - pad)), Math.max(0, Math.floor(y0 - pad)), Math.min(W, Math.ceil(x1 + pad)), Math.min(H, Math.ceil(y1 + pad))];
 }
 
-// Put one finished operation onto its layer's bitmap.
-function bakeOp(op) {
+// Put one finished operation onto a layer's bitmap (its own, or `target` for previews).
+// `geom` is a shape's current position when it was moved later by an 'edit' operation.
+function bakeOp(op, target = null, strict = false, geom = null) {
   try {
-    const lc = lctx(op.l);
+    const lc = target || lctx(op.l);
     if (op.k === 'stroke' || op.k === 'shape') {
-      const [x0, y0, x1, y1] = opBBox(op);
+      const eff = op.k === 'shape' && geom ? (opTransforms(op), { ...op, ...geom }) : op;
+      const [x0, y0, x1, y1] = opBBox(eff);
       if (x1 <= x0 || y1 <= y0) return;
       sctx.clearRect(0, 0, W, H);
-      if (op.k === 'stroke') { op._n = 0; paintStroke(op, sctx); } else paintShape(op, sctx);
+      if (op.k === 'stroke') { op._n = 0; paintStroke(op, sctx); } else paintShape(eff, sctx);
       lc.save();
       lc.globalAlpha = op.op ?? 1;
       lc.globalCompositeOperation = op.tool === 'eraser' ? 'destination-out' : 'source-over';
       lc.drawImage(scratch, x0, y0, x1 - x0, y1 - y0, x0, y0, x1 - x0, y1 - y0);
       lc.restore();
       sctx.clearRect(0, 0, W, H);
-    } else if (op.k === 'fill') floodFill(lc, op.x, op.y, op.color);
-  } catch (e) { console.warn('could not draw', op.k, e); }
+    } else if (op.k === 'fill') op._fill = floodFill(lc, op.x, op.y, op.color);
+    // an 'edit' draws nothing itself: it changes where its shape is drawn (see editsFor)
+  } catch (e) { if (strict) throw e; console.warn('could not draw', op.k, e); }
+}
+
+// where moved shapes now are: the latest 'edit' for each shape on this layer
+function editsFor(id) {
+  const m = new Map();
+  for (const o of ops) if (o.k === 'edit' && o.l === id) m.set(o.t, { x1: o.x1, y1: o.y1, x2: o.x2, y2: o.y2 });
+  return m;
+}
+function drawLayerOps(target, id, skipId = null) {
+  const edits = editsFor(id);
+  for (const op of ops) if (op.l === id && !op._live && op.id !== skipId) bakeOp(op, target, false, edits.get(op.id));
 }
 
 function renderLayer(id) {
   lctx(id).clearRect(0, 0, W, H);
-  for (const op of ops) if (op.l === id && !op._live) bakeOp(op);
+  drawLayerOps(lctx(id), id);
 }
 function renderAll() {
   for (const l of layers) renderLayer(l.id);
@@ -402,6 +463,14 @@ function composeNow() {
   for (const L of layers) {
     if (!L.visible) continue;
     let src = lcanvas(L.id);
+    if (shapeEdit && shapeEdit.l === L.id) { // a shape being moved: the layer without it, plus the shape at its new place
+      const so = findOp(shapeEdit.id);
+      if (so) {
+        tctx.clearRect(0, 0, W, H); tctx.drawImage(shapeEdit.base, 0, 0);
+        tctx.save(); tctx.globalAlpha = so.op ?? 1; opTransforms(so); paintShape({ ...so, ...shapeEdit.geom }, tctx); tctx.restore();
+        src = tmp;
+      }
+    }
     const live = [...liveOps].filter((o) => o.l === L.id);
     if (live.length) {
       if (src !== tmp) { tctx.clearRect(0, 0, W, H); tctx.drawImage(src, 0, 0); }
@@ -424,17 +493,148 @@ let shapePreview = null;
 function drawOverlay() {
   octx.clearRect(0, 0, W, H);
   if (shapePreview) { octx.save(); octx.globalAlpha = shapePreview.op; paintShape(shapePreview, octx); octx.restore(); }
-  if (uiReady && mirrorLines.length && (mirrorOn || tool === 'mirror')) drawMirrorLines(mirrorLines, mirrorOn ? 'rgba(47,128,237,.85)' : 'rgba(110,110,110,.7)');
+  if (selShape && SHAPE_TOOLS.has(tool)) drawShapeHandles();
+  if (uiReady && mirrorLines.length && (mirrorOn || tool === 'mirror')) drawMirrorLines(mirrorLines, mirrorOn ? 'rgba(47,128,237,.85)' : 'rgba(110,110,110,.7)', tool === 'mirror' ? mirrorSel : -1);
   if (mirrorDrag?.line) drawMirrorLines([mirrorDrag.line], 'rgba(230,57,70,.95)');
 }
-function drawMirrorLines(lines, colour) {
-  octx.save(); octx.lineWidth = Math.max(2, W / 380); octx.setLineDash([18, 12]); octx.lineCap = 'round';
-  for (const [x1, y1, x2, y2] of lines) {
+function drawMirrorLines(lines, colour, sel = -1) {
+  octx.save(); octx.setLineDash([18, 12]); octx.lineCap = 'round';
+  lines.forEach(([x1, y1, x2, y2], i) => {
+    octx.lineWidth = Math.max(2, W / 380) * (i === sel ? 1.8 : 1);
     const len = Math.hypot(x2 - x1, y2 - y1) || 1, ux = (x2 - x1) / len, uy = (y2 - y1) / len, far = 6000;
     octx.strokeStyle = 'rgba(255,255,255,.9)'; octx.beginPath(); octx.moveTo(x1 - ux * far, y1 - uy * far); octx.lineTo(x1 + ux * far, y1 + uy * far); octx.stroke();
     octx.lineDashOffset = 15; octx.strokeStyle = colour; octx.stroke(); octx.lineDashOffset = 0;
-  }
+  });
   octx.restore();
+  const l = lines[sel]; // the selected line shows two dots: drag one to turn the line
+  if (l) {
+    octx.save(); octx.lineWidth = 2.5 / screenScale(); octx.strokeStyle = '#2f80ed'; octx.fillStyle = '#fff';
+    for (const [hx, hy] of [[l[0], l[1]], [l[2], l[3]]]) { octx.beginPath(); octx.arc(hx, hy, handleR(), 0, Math.PI * 2); octx.fill(); octx.stroke(); }
+    octx.restore();
+  }
+}
+
+// ---------- the bucket, as the person using it sees it ----------
+let fillBusy = false;
+// wait for the next paint so 'Filling…' shows first, but never rely on it alone: a hidden or throttled webview may not paint at all
+const nextFrame = () => new Promise((r) => { let done = false; const go = () => { if (!done) { done = true; r(); } }; requestAnimationFrame(() => setTimeout(go, 0)); setTimeout(go, 80); });
+function hideToast() { $('#toast').classList.remove('show'); }
+async function doFill(x, y) {
+  if (fillBusy) return;
+  const layer = layerById(activeLayer);
+  if (!layer?.visible) return toast('This layer is hidden - show it to fill on it');
+  fillBusy = true;
+  toast('Filling…');
+  await nextFrame();                       // let "Filling…" appear before the work starts (a phone can take a moment)
+  const op = { id: newId(), k: 'fill', l: activeLayer, x, y, color };
+  try {
+    ops.push(op); redoStack.length = 0;
+    bakeOp(op, null, true);
+    if (!op._fill) throw new Error('nothing to fill here');
+    send({ t: 'op', op }); compose();
+    const st = op._fill;
+    if (st.leaked) toast('That outline is not closed, so the colour spread over a big area. Tap ↩️ to undo, close the gap and try again.');
+    else if (!st.hadWalls && ops.some((o) => o !== op && o.l !== activeLayer && (o.k === 'stroke' || o.k === 'shape'))) toast(`"${layer.name}" is empty, so the colour covered the whole layer. Undo with ↩️ and switch to the layer you drew on.`);
+    else hideToast();
+  } catch (e) {
+    const i = ops.indexOf(op); if (i >= 0) ops.splice(i, 1);
+    renderLayer(op.l); compose();
+    toast(`Could not fill here (${e.message || 'error'})`);
+  } finally { fillBusy = false; }
+}
+
+// ---------- moving shapes and mirror lines ----------
+// css pixels per canvas pixel right now (so handles and touch targets stay finger-sized at any zoom)
+const screenScale = () => (wrap.clientWidth / W) * view.s;
+const handleR = () => Math.min(70, Math.max(9, 13 / screenScale()));
+// where a shape is now: its own corners, or the latest 'edit' that moved it
+function effGeom(op) {
+  for (let i = ops.length - 1; i >= 0; i--) { const o = ops[i]; if (o.k === 'edit' && o.t === op.id) return { x1: o.x1, y1: o.y1, x2: o.x2, y2: o.y2 }; }
+  return { x1: op.x1, y1: op.y1, x2: op.x2, y2: op.y2 };
+}
+function segDist(px, py, ax, ay, bx, by) {
+  const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy;
+  const t = l2 ? Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2)) : 0;
+  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+}
+// how far a point is from a shape's outline (0 when it is inside a filled shape)
+function shapeDist(g, shape, filled, x, y) {
+  if (shape === 'line') return segDist(x, y, g.x1, g.y1, g.x2, g.y2);
+  if (shape === 'rect') {
+    const l = Math.min(g.x1, g.x2), r = Math.max(g.x1, g.x2), t = Math.min(g.y1, g.y2), b = Math.max(g.y1, g.y2);
+    if (filled && x >= l && x <= r && y >= t && y <= b) return 0;
+    return Math.min(segDist(x, y, l, t, r, t), segDist(x, y, r, t, r, b), segDist(x, y, r, b, l, b), segDist(x, y, l, b, l, t));
+  }
+  const cx = (g.x1 + g.x2) / 2, cy = (g.y1 + g.y2) / 2, rx = Math.abs(g.x2 - g.x1) / 2 || 1, ry = Math.abs(g.y2 - g.y1) / 2 || 1;
+  const k = Math.hypot((x - cx) / rx, (y - cy) / ry);
+  return filled && k <= 1 ? 0 : Math.abs(k - 1) * Math.min(rx, ry);
+}
+function handlesOf(g, shape) {
+  if (shape === 'line') return [{ x: g.x1, y: g.y1, kx: 'x1', ky: 'y1' }, { x: g.x2, y: g.y2, kx: 'x2', ky: 'y2' }];
+  return [{ x: g.x1, y: g.y1, kx: 'x1', ky: 'y1' }, { x: g.x2, y: g.y1, kx: 'x2', ky: 'y1' }, { x: g.x2, y: g.y2, kx: 'x2', ky: 'y2' }, { x: g.x1, y: g.y2, kx: 'x1', ky: 'y2' }];
+}
+function hitShape(x, y) { // the topmost visible shape under a finger
+  const tol = Math.max(16, 15 / screenScale());
+  for (let i = ops.length - 1; i >= 0; i--) {
+    const o = ops[i];
+    if (o.k !== 'shape' || !layerById(o.l)?.visible) continue;
+    if (shapeDist(effGeom(o), o.shape, o.f, x, y) <= tol + o.size / 2) return o;
+  }
+  return null;
+}
+// dragging a shape (or one of its corner dots): show it moving over the layer-without-it, then store one 'edit'
+function beginShapeEdit(op, how, x, y) {
+  const base = makeCanvas();
+  drawLayerOps(base.getContext('2d', { willReadFrequently: true }), op.l, op.id);
+  const g0 = effGeom(op);
+  shapeEdit = { id: op.id, l: op.l, how, sx: x, sy: y, g0, geom: { ...g0 }, base, moved: false };
+  compose();
+}
+function updateShapeEdit(x, y) {
+  const e = shapeEdit, dx = x - e.sx, dy = y - e.sy;
+  if (Math.hypot(dx, dy) > 3 / screenScale()) e.moved = true;
+  if (!e.moved) return;
+  e.geom = e.how.body ? { x1: e.g0.x1 + dx, y1: e.g0.y1 + dy, x2: e.g0.x2 + dx, y2: e.g0.y2 + dy } : { ...e.g0, [e.how.handle.kx]: x, [e.how.handle.ky]: y };
+  compose();
+}
+function endShapeEdit() {
+  const e = shapeEdit; shapeEdit = null;
+  if (e.moved) addOp({ id: newId(), k: 'edit', l: e.l, t: e.id, ...e.geom }); else compose();
+}
+function drawShapeHandles() {
+  const so = findOp(selShape);
+  if (!so) { selShape = null; return; }
+  const g = shapeEdit?.id === so.id ? shapeEdit.geom : effGeom(so), r = handleR(), lw = 2.5 / screenScale();
+  octx.save();
+  if (so.shape !== 'line') {
+    octx.lineWidth = lw; octx.setLineDash([10 / screenScale(), 7 / screenScale()]); octx.strokeStyle = '#2f80ed';
+    octx.strokeRect(Math.min(g.x1, g.x2), Math.min(g.y1, g.y2), Math.abs(g.x2 - g.x1), Math.abs(g.y2 - g.y1));
+    octx.setLineDash([]);
+  }
+  for (const h of handlesOf(g, so.shape)) { octx.beginPath(); octx.arc(h.x, h.y, r, 0, Math.PI * 2); octx.fillStyle = '#fff'; octx.fill(); octx.lineWidth = lw; octx.strokeStyle = '#2f80ed'; octx.stroke(); }
+  octx.restore();
+}
+function mirrorHit(x, y) { // what is under a finger: a dot of the selected mirror line, a line, or nothing
+  const hr = handleR() * 1.7, tol = Math.max(18, 14 / screenScale());
+  const l = mirrorLines[mirrorSel];
+  if (l) {
+    if (Math.hypot(l[0] - x, l[1] - y) <= hr) return { i: mirrorSel, mode: 'p0' };
+    if (Math.hypot(l[2] - x, l[3] - y) <= hr) return { i: mirrorSel, mode: 'p1' };
+  }
+  let best = -1, bd = tol;
+  mirrorLines.forEach((ml, i) => { const d = distToLine(x, y, ml); if (d < bd) { bd = d; best = i; } });
+  return best >= 0 ? { i: best, mode: 'move' } : null;
+}
+function moveMirrorEdit(x, y) {
+  const e = mirrorEdit, l0 = e.l0, dx = x - e.sx, dy = y - e.sy;
+  if (Math.hypot(dx, dy) > 4 / screenScale()) e.moved = true;
+  if (!e.moved) return;
+  let l;
+  if (e.mode === 'move') l = [l0[0] + dx, l0[1] + dy, l0[2] + dx, l0[3] + dy];
+  else if (e.mode === 'p0') { const s = snapLine(l0[2], l0[3], x, y); l = [s[2], s[3], l0[2], l0[3]]; }   // turn it around the other dot
+  else { const s = snapLine(l0[0], l0[1], x, y); l = [l0[0], l0[1], s[2], s[3]]; }
+  mirrorLines[e.i] = l.map((n) => Math.round(n * 10) / 10);
+  compose();
 }
 
 // ---------- adding my own operations ----------
@@ -443,7 +643,8 @@ function send(m) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m, (k, 
 // fills and shapes arrive as one piece
 function addOp(op) {
   ops.push(op); redoStack.length = 0;
-  bakeOp(op); send({ t: 'op', op }); compose();
+  if (op.k === 'edit') renderLayer(op.l); else bakeOp(op);
+  send({ t: 'op', op }); compose();
 }
 
 function undo() {
@@ -508,7 +709,7 @@ function connect() {
     else if (m.t === 'joinreq-cancel') removeJoinReq(m.id);
     else if (m.t === 'op') {
       ops.push(m.op);
-      if (m.op.k === 'stroke') { startLive(m.op); compose(); } else { bakeOp(m.op); compose(); }
+      if (m.op.k === 'stroke') { startLive(m.op); compose(); } else if (m.op.k === 'edit') { renderLayer(m.op.l); compose(); } else { bakeOp(m.op); compose(); }
     } else if (m.t === 'pts') {
       const o = findOp(m.id);
       if (o) { o.pts.push(...m.pts); if (o.pr && m.pr) o.pr.push(...m.pr); if (o._live) { o._t = performance.now(); paintStroke(o, o._cv.getContext('2d')); compose(); } else o._stale = true; }
@@ -556,7 +757,7 @@ const pointers = new Map();     // active touches/pens/mouse
 let pinch = null;               // two-finger zoom/pan in progress
 let pending = null;             // a stroke that has not started yet (waits for movement or a short delay)
 let curOp = null, buf = [], bufPr = [], flushTimer = null;
-let shapeStart = null, eyeDrag = false, mirrorDrag = null, sp = null;
+let shapeStart = null, eyeDrag = false, mirrorDrag = null, shapeEdit = null, mirrorEdit = null, sp = null;
 
 function flush() {
   flushTimer = null;
@@ -609,13 +810,25 @@ stage.addEventListener('pointerdown', (e) => {
   const [x, y] = pos(e);
   if (!inCanvas(x, y)) return;
   e.preventDefault();
-  if (tool === 'fill') {
-    if (!layerById(activeLayer)?.visible) return toast('This layer is hidden');
-    return addOp({ id: newId(), k: 'fill', l: activeLayer, x, y, color });
-  }
+  if (tool === 'fill') return doFill(x, y);
   if (tool === 'eyedrop') { pickColourAt(x, y); eyeDrag = true; return; }
-  if (tool === 'mirror') { mirrorDrag = { x0: x, y0: y, line: null }; return; }
-  if (tool === 'line' || tool === 'rect' || tool === 'ellipse') { shapeStart = [x, y]; return; }
+  if (tool === 'mirror') {
+    const hit = mirrorHit(x, y);
+    if (hit) { mirrorSel = hit.i; mirrorEdit = { ...hit, sx: x, sy: y, l0: [...mirrorLines[hit.i]], moved: false }; updateMirrorUI(); compose(); }
+    else mirrorDrag = { x0: x, y0: y, line: null };      // empty space: a new line starts here
+    return;
+  }
+  if (SHAPE_TOOLS.has(tool)) {
+    const so = selShape && findOp(selShape);
+    if (so && layerById(so.l)?.visible) { // the selected shape: its dots resize it, its body moves it
+      const g = effGeom(so), hr = handleR() * 1.7;
+      const h = handlesOf(g, so.shape).find((p) => Math.hypot(p.x - x, p.y - y) <= hr);
+      if (h) return beginShapeEdit(so, { handle: h }, x, y);
+      if (shapeDist(g, so.shape, so.f, x, y) <= Math.max(handleR(), so.size / 2 + 8)) return beginShapeEdit(so, { body: true }, x, y);
+    }
+    shapeStart = [x, y];                                  // otherwise: a new shape (or, if it is only a tap, select the shape tapped)
+    return;
+  }
   // brush-type tools: start on first movement (or a tap / short delay), so a second finger can still cancel
   pending = { x, y, pr: pressureOf(e), timer: setTimeout(() => { if (pending) { beginStroke(pending.x, pending.y, pending.pr); pending = null; } }, 90) };
 });
@@ -631,6 +844,10 @@ stage.addEventListener('pointermove', (e) => {
   if (curOp) {
     const evs = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
     for (const ev of evs.length ? evs : [e]) { const [cx, cy] = pos(ev); extendStroke(cx, cy, pressureOf(ev)); }
+  } else if (shapeEdit) {
+    updateShapeEdit(x, y);
+  } else if (mirrorEdit) {
+    moveMirrorEdit(x, y);
   } else if (shapeStart) {
     const [x1, y1] = shapeStart;
     shapePreview = { k: 'shape', shape: tool, x1, y1, x2: x, y2: y, color, size: cfg[tool].size, op: opacityOf(tool), f: fillShapes, ...mirrorForOp() };
@@ -648,9 +865,12 @@ function endPointer(e) {
   const [x, y] = pos(e);
   if (pending) { clearTimeout(pending.timer); beginStroke(pending.x, pending.y, pending.pr); pending = null; }
   if (curOp) finishStroke(x, y, pressureOf(e));
+  if (shapeEdit) endShapeEdit();
+  if (mirrorEdit) { mirrorEdit = null; updateMirrorUI(); compose(); }
   if (shapeStart) {
-    const pv = shapePreview; shapeStart = null; shapePreview = null;
-    if (pv && Math.hypot(pv.x2 - pv.x1, pv.y2 - pv.y1) > 3 && layerById(activeLayer)?.visible) addOp({ id: newId(), l: activeLayer, ...pv });
+    const [sx0, sy0] = shapeStart, pv = shapePreview; shapeStart = null; shapePreview = null;
+    if (Math.hypot(x - sx0, y - sy0) <= 10 / screenScale()) { selShape = hitShape(x, y)?.id || null; compose(); }   // a tap: select (or deselect)
+    else if (pv && Math.hypot(pv.x2 - pv.x1, pv.y2 - pv.y1) > 3 && layerById(activeLayer)?.visible) { const op = { id: newId(), l: activeLayer, ...pv }; addOp(op); selShape = op.id; }
     else compose();
   }
   if (eyeDrag) { eyeDrag = false; setTool(prevTool === 'eyedrop' ? 'pen' : prevTool); }
@@ -663,7 +883,7 @@ function beginPinch() {
   // a second finger turns whatever was starting into a zoom/pan gesture
   if (pending) { clearTimeout(pending.timer); pending = null; }
   if (curOp) finishStroke();
-  shapeStart = null; shapePreview = null; eyeDrag = false; mirrorDrag = null;
+  shapeStart = null; shapePreview = null; eyeDrag = false; mirrorDrag = null; shapeEdit = null; mirrorEdit = null;
   const [a, b] = [...pointers.values()];
   const r = wrap.getBoundingClientRect();
   pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, s0: view.s, tx0: view.tx, ty0: view.ty, cx: r.left + r.width / 2 - view.tx, cy: r.top + r.height / 2 - view.ty };
@@ -714,6 +934,8 @@ TOOLS.forEach((t) => {
 function setTool(id) {
   if (id === tool) return;
   if (id === 'eyedrop') prevTool = tool;
+  if (!SHAPE_TOOLS.has(id)) selShape = null;
+  if (id !== 'mirror') mirrorSel = -1;
   tool = id;
   document.querySelectorAll('.tool').forEach((x) => x.classList.toggle('on', x.dataset.tool === id));
   updateToolUI();
@@ -758,21 +980,18 @@ function addMirrorLine(l) {
   if (mirrorLines.length > 3) mirrorLines.shift();     // three lines (eight copies) is the most
   mirrorOn = true; updateMirrorUI(); compose();
 }
-function finishMirrorDrag(md, x, y) {
+function finishMirrorDrag(md) {
   const l = md.line;
-  if (l && Math.hypot(l[2] - l[0], l[3] - l[1]) >= 60) return addMirrorLine(l);
-  // a tap: remove the mirror line it lands on
-  let best = -1, bd = 40;
-  mirrorLines.forEach((ml, i) => { const d = distToLine(x, y, ml); if (d < bd) { bd = d; best = i; } });
-  if (best >= 0) { mirrorLines.splice(best, 1); if (!mirrorLines.length) mirrorOn = false; updateMirrorUI(); toast('Mirror line removed'); }
-  compose();
+  if (l && Math.hypot(l[2] - l[0], l[3] - l[1]) >= 60) { addMirrorLine(l); mirrorSel = mirrorLines.length - 1; updateMirrorUI(); return; }
+  mirrorSel = -1; updateMirrorUI(); compose();      // a tap on empty space just lets go of the selected line
 }
 function updateMirrorUI() {
   const n = mirrorLines.length, on = mirrorOn && n > 0;
   $('#symBtn').textContent = on ? `⇋ Mirror: on (${n} line${n > 1 ? 's' : ''})` : '⇋ Mirror: off';
   $('#symBtn').classList.toggle('on', on);
   $('#mirbar').hidden = tool !== 'mirror';
-  $('#mirUndo').disabled = !n; $('#mirClear').disabled = !n;
+  $('#mirDel').disabled = !n; $('#mirClear').disabled = !n;
+  $('#mirDel').textContent = mirrorSel >= 0 ? 'Delete this line' : 'Delete last line';
 }
 $('#symBtn').addEventListener('click', () => {
   if (!mirrorLines.length) { addMirrorLine([W / 2, 0, W / 2, H]); toast('Mirror line added in the middle. Use the Mirror tool to place your own'); return; }
@@ -780,8 +999,13 @@ $('#symBtn').addEventListener('click', () => {
 });
 $('#mirV').addEventListener('click', () => addMirrorLine([W / 2, 0, W / 2, H]));
 $('#mirH').addEventListener('click', () => addMirrorLine([0, H / 2, W, H / 2]));
-$('#mirUndo').addEventListener('click', () => { mirrorLines.pop(); if (!mirrorLines.length) mirrorOn = false; updateMirrorUI(); compose(); });
-$('#mirClear').addEventListener('click', () => { mirrorLines = []; mirrorOn = false; updateMirrorUI(); compose(); });
+$('#mirDel').addEventListener('click', () => {
+  const i = mirrorSel >= 0 ? mirrorSel : mirrorLines.length - 1;
+  if (i < 0) return;
+  mirrorLines.splice(i, 1); mirrorSel = -1; if (!mirrorLines.length) mirrorOn = false;
+  updateMirrorUI(); compose();
+});
+$('#mirClear').addEventListener('click', () => { mirrorLines = []; mirrorSel = -1; mirrorOn = false; updateMirrorUI(); compose(); });
 $('#smooth').addEventListener('input', (e) => { smooth = +e.target.value; $('#smoothLabel').textContent = smooth ? `Smooth ${smooth}` : 'Smooth off'; });
 $('#fillShape').addEventListener('click', () => { fillShapes = !fillShapes; $('#fillShape').textContent = fillShapes ? '▮ Filled' : '▭ Outline'; $('#fillShape').classList.toggle('on', fillShapes); });
 
