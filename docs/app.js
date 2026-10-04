@@ -34,7 +34,8 @@ const layerCv = new Map();                        // layer id -> its own bitmap
 let bg = '#ffffff';                               // canvas colour: a hex colour, or 'transparent'
 let tool = 'pen', prevTool = 'pen';
 let color = '#000000';
-let symmetry = 0;                                 // 0 off, 1 mirror left/right, 2 mirror up/down, 3 both
+let mirrorLines = [];                             // dotted mirror lines you placed, each [x1, y1, x2, y2] (up to 3)
+let mirrorOn = false;
 let smooth = 0;                                   // stroke smoothing 0..10
 let fillShapes = false;
 let ws = null;
@@ -55,6 +56,7 @@ const TOOLS = [
   { id: 'line', icon: '／', label: 'Line', size: 6, op: 1 },
   { id: 'rect', icon: '▭', label: 'Rectangle', size: 6, op: 1 },
   { id: 'ellipse', icon: '◯', label: 'Ellipse', size: 6, op: 1 },
+  { id: 'mirror', icon: '🪞', label: 'Mirror' },
 ];
 const cfg = Object.fromEntries(TOOLS.map((t) => [t.id, { size: t.size, op: t.op }]));   // each tool remembers its size + opacity
 const hasSize = (t) => cfg[t].size !== undefined;
@@ -109,7 +111,29 @@ function rnd(st) { // small seeded random generator: every device draws chalk gr
   t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
   return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
 }
-const mirrors = (sym) => { const m = [[1, 1]]; if (sym & 1) m.push([-1, 1]); if (sym & 2) m.push([1, -1]); if (sym === 3) m.push([-1, -1]); return m; };
+// Mirroring. A mirror line is [x1, y1, x2, y2]; a point is reflected across the (endless) line through them.
+function reflector(l) {
+  const dx = l[2] - l[0], dy = l[3] - l[1], len = Math.hypot(dx, dy) || 1, ux = dx / len, uy = dy / len;
+  return (x, y) => { const vx = x - l[0], vy = y - l[1], dot = vx * ux + vy * uy; return [l[0] + 2 * dot * ux - vx, l[1] + 2 * dot * uy - vy]; };
+}
+// every copy a stroke/shape is drawn as: the original first, then its reflections. Two lines give four copies
+// (the original, across line 1, across line 2, and across both); three lines give eight.
+function opTransforms(op) {
+  if (op._ts) return op._ts;
+  const id = (x, y) => [x, y];
+  let ts = [id];
+  if (op.mir?.length) {
+    for (const l of op.mir) { const R = reflector(l); ts = ts.concat(ts.map((t) => (x, y) => { const q = t(x, y); return R(q[0], q[1]); })); }
+  } else if (op.sym) { // drawings made with the older fixed centre mirror
+    ts = [id];
+    if (op.sym & 1) ts.push((x, y) => [W - x, y]);
+    if (op.sym & 2) ts.push((x, y) => [x, H - y]);
+    if (op.sym === 3) ts.push((x, y) => [W - x, H - y]);
+  }
+  return (op._ts = ts);
+}
+const mirrorActive = () => mirrorOn && mirrorLines.length > 0;
+const mirrorForOp = () => (mirrorActive() ? { mir: mirrorLines.map((l) => [...l]) } : {});
 const makeCanvas = () => { const c = document.createElement('canvas'); c.width = W; c.height = H; return c; };
 let scratch = makeCanvas(), sctx = scratch.getContext('2d');
 let tmp = makeCanvas(), tctx = tmp.getContext('2d');
@@ -139,9 +163,10 @@ function paintStroke(op, c) {
   if (i >= n) return;
   if (i === 0) op._ds = null;
   const w = widthOf(op.tool, op.size);
-  mirrors(op.sym || 0).forEach(([sx, sy], mi) => {
-    const X = (k) => (sx < 0 ? W - p[2 * k] : p[2 * k]);
-    const Y = (k) => (sy < 0 ? H - p[2 * k + 1] : p[2 * k + 1]);
+  opTransforms(op).forEach((T, mi) => {
+    const xs = [], ys = [];
+    for (let k = Math.max(0, i - 1); k < n; k++) { const q = T(p[2 * k], p[2 * k + 1]); xs[k] = q[0]; ys[k] = q[1]; }
+    const X = (k) => xs[k], Y = (k) => ys[k];
     const pr = (k) => (op.pr ? 0.2 + 0.9 * (op.pr[k] ?? 50) / 100 : 1);
     c.save();
     c.lineCap = c.lineJoin = 'round';
@@ -196,18 +221,32 @@ function paintStroke(op, c) {
   op._n = n;
 }
 
+// a shape as a list of points, so it can be reflected across a mirror line at any angle
+function shapeOutline(op) {
+  const { x1, y1, x2, y2 } = op;
+  if (op.shape === 'line') return { pts: [[x1, y1], [x2, y2]], closed: false };
+  if (op.shape === 'rect') return { pts: [[x1, y1], [x2, y1], [x2, y2], [x1, y2]], closed: true };
+  const cx = (x1 + x2) / 2, cy = (y1 + y2) / 2, rx = Math.abs(x2 - x1) / 2, ry = Math.abs(y2 - y1) / 2, pts = [];
+  for (let i = 0; i < 120; i++) { const t = (i / 120) * Math.PI * 2; pts.push([cx + Math.cos(t) * rx, cy + Math.sin(t) * ry]); }
+  return { pts, closed: true };
+}
 function paintShape(op, c) {
-  mirrors(op.sym || 0).forEach(([sx, sy]) => {
-    const fx = (x) => (sx < 0 ? W - x : x), fy = (y) => (sy < 0 ? H - y : y);
-    const x1 = fx(op.x1), y1 = fy(op.y1), x2 = fx(op.x2), y2 = fy(op.y2);
+  opTransforms(op).forEach((T, i) => {
     c.save();
     c.lineCap = c.lineJoin = 'round';
     c.strokeStyle = c.fillStyle = op.color;
     c.lineWidth = op.size;
     c.beginPath();
-    if (op.shape === 'line') { c.moveTo(x1, y1); c.lineTo(x2, y2); }
-    else if (op.shape === 'rect') c.rect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
-    else c.ellipse((x1 + x2) / 2, (y1 + y2) / 2, Math.abs(x2 - x1) / 2, Math.abs(y2 - y1) / 2, 0, 0, Math.PI * 2);
+    if (i === 0) { // the original, exactly as drawn
+      const { x1, y1, x2, y2 } = op;
+      if (op.shape === 'line') { c.moveTo(x1, y1); c.lineTo(x2, y2); }
+      else if (op.shape === 'rect') c.rect(Math.min(x1, x2), Math.min(y1, y2), Math.abs(x2 - x1), Math.abs(y2 - y1));
+      else c.ellipse((x1 + x2) / 2, (y1 + y2) / 2, Math.abs(x2 - x1) / 2, Math.abs(y2 - y1) / 2, 0, 0, Math.PI * 2);
+    } else {
+      const o = shapeOutline(op);
+      o.pts.forEach(([x, y], k) => { const q = T(x, y); if (k) c.lineTo(q[0], q[1]); else c.moveTo(q[0], q[1]); });
+      if (o.closed) c.closePath();
+    }
     if (op.f && op.shape !== 'line') c.fill();
     c.stroke();
     c.restore();
@@ -290,7 +329,8 @@ function opBBox(op) {
     for (let i = 0; i < op.pts.length; i += 2) add(op.pts[i], op.pts[i + 1]);
   } else if (op.k === 'shape') { pad = op.size + 4; add(op.x1, op.y1); add(op.x2, op.y2); }
   else { return [0, 0, W, H]; }
-  if (op.sym) { const a = [x0, y0, x1, y1]; add(W - a[0], a[1]); add(a[0], H - a[1]); add(W - a[2], a[3]); add(a[2], H - a[3]); }
+  const ts = opTransforms(op);
+  if (ts.length > 1) { const cs = [[x0, y0], [x1, y0], [x0, y1], [x1, y1]]; for (const T of ts.slice(1)) for (const [cx, cy] of cs) { const q = T(cx, cy); add(q[0], q[1]); } }
   return [Math.max(0, Math.floor(x0 - pad)), Math.max(0, Math.floor(y0 - pad)), Math.min(W, Math.ceil(x1 + pad)), Math.min(H, Math.ceil(y1 + pad))];
 }
 
@@ -382,12 +422,17 @@ let shapePreview = null;
 function drawOverlay() {
   octx.clearRect(0, 0, W, H);
   if (shapePreview) { octx.save(); octx.globalAlpha = shapePreview.op; paintShape(shapePreview, octx); octx.restore(); }
-  if (symmetry && uiReady) {
-    octx.save(); octx.strokeStyle = 'rgba(47,128,237,.55)'; octx.lineWidth = Math.max(1.5, W / 600); octx.setLineDash([14, 10]);
-    if (symmetry & 1) { octx.beginPath(); octx.moveTo(W / 2, 0); octx.lineTo(W / 2, H); octx.stroke(); }
-    if (symmetry & 2) { octx.beginPath(); octx.moveTo(0, H / 2); octx.lineTo(W, H / 2); octx.stroke(); }
-    octx.restore();
+  if (uiReady && mirrorLines.length && (mirrorOn || tool === 'mirror')) drawMirrorLines(mirrorLines, mirrorOn ? 'rgba(47,128,237,.85)' : 'rgba(110,110,110,.7)');
+  if (mirrorDrag?.line) drawMirrorLines([mirrorDrag.line], 'rgba(230,57,70,.95)');
+}
+function drawMirrorLines(lines, colour) {
+  octx.save(); octx.lineWidth = Math.max(2, W / 380); octx.setLineDash([18, 12]); octx.lineCap = 'round';
+  for (const [x1, y1, x2, y2] of lines) {
+    const len = Math.hypot(x2 - x1, y2 - y1) || 1, ux = (x2 - x1) / len, uy = (y2 - y1) / len, far = 6000;
+    octx.strokeStyle = 'rgba(255,255,255,.9)'; octx.beginPath(); octx.moveTo(x1 - ux * far, y1 - uy * far); octx.lineTo(x1 + ux * far, y1 + uy * far); octx.stroke();
+    octx.lineDashOffset = 15; octx.strokeStyle = colour; octx.stroke(); octx.lineDashOffset = 0;
   }
+  octx.restore();
 }
 
 // ---------- adding my own operations ----------
@@ -509,7 +554,7 @@ const pointers = new Map();     // active touches/pens/mouse
 let pinch = null;               // two-finger zoom/pan in progress
 let pending = null;             // a stroke that has not started yet (waits for movement or a short delay)
 let curOp = null, buf = [], bufPr = [], flushTimer = null;
-let shapeStart = null, eyeDrag = false, sp = null;
+let shapeStart = null, eyeDrag = false, mirrorDrag = null, sp = null;
 
 function flush() {
   flushTimer = null;
@@ -519,7 +564,7 @@ function opacityOf(t) { return cfg[t].op ?? 1; }
 
 function beginStroke(x, y, pressure) {
   if (!layerById(activeLayer)?.visible) return toast('This layer is hidden - show it to draw on it');
-  const op = { id: newId(), k: 'stroke', l: activeLayer, tool, color, size: cfg[tool].size, op: opacityOf(tool), sym: symmetry, pts: [x, y] };
+  const op = { id: newId(), k: 'stroke', l: activeLayer, tool, color, size: cfg[tool].size, op: opacityOf(tool), pts: [x, y], ...mirrorForOp() };
   if (pressure != null) op.pr = [pressure];
   ops.push(op); redoStack.length = 0;
   startLive(op); curOp = op; sp = [x, y];
@@ -567,6 +612,7 @@ stage.addEventListener('pointerdown', (e) => {
     return addOp({ id: newId(), k: 'fill', l: activeLayer, x, y, color });
   }
   if (tool === 'eyedrop') { pickColourAt(x, y); eyeDrag = true; return; }
+  if (tool === 'mirror') { mirrorDrag = { x0: x, y0: y, line: null }; return; }
   if (tool === 'line' || tool === 'rect' || tool === 'ellipse') { shapeStart = [x, y]; return; }
   // brush-type tools: start on first movement (or a tap / short delay), so a second finger can still cancel
   pending = { x, y, pr: pressureOf(e), timer: setTimeout(() => { if (pending) { beginStroke(pending.x, pending.y, pending.pr); pending = null; } }, 90) };
@@ -585,8 +631,10 @@ stage.addEventListener('pointermove', (e) => {
     for (const ev of evs.length ? evs : [e]) { const [cx, cy] = pos(ev); extendStroke(cx, cy, pressureOf(ev)); }
   } else if (shapeStart) {
     const [x1, y1] = shapeStart;
-    shapePreview = { k: 'shape', shape: tool, x1, y1, x2: x, y2: y, color, size: cfg[tool].size, op: opacityOf(tool), f: fillShapes, sym: symmetry };
+    shapePreview = { k: 'shape', shape: tool, x1, y1, x2: x, y2: y, color, size: cfg[tool].size, op: opacityOf(tool), f: fillShapes, ...mirrorForOp() };
     compose();
+  } else if (mirrorDrag) {
+    mirrorDrag.line = snapLine(mirrorDrag.x0, mirrorDrag.y0, x, y); compose();
   } else if (eyeDrag) pickColourAt(x, y);
 });
 
@@ -604,6 +652,7 @@ function endPointer(e) {
     else compose();
   }
   if (eyeDrag) { eyeDrag = false; setTool(prevTool === 'eyedrop' ? 'pen' : prevTool); }
+  if (mirrorDrag) { const md = mirrorDrag; mirrorDrag = null; finishMirrorDrag(md, x, y); }
 }
 stage.addEventListener('pointerup', endPointer);
 stage.addEventListener('pointercancel', endPointer);
@@ -612,7 +661,7 @@ function beginPinch() {
   // a second finger turns whatever was starting into a zoom/pan gesture
   if (pending) { clearTimeout(pending.timer); pending = null; }
   if (curOp) finishStroke();
-  shapeStart = null; shapePreview = null; eyeDrag = false;
+  shapeStart = null; shapePreview = null; eyeDrag = false; mirrorDrag = null;
   const [a, b] = [...pointers.values()];
   const r = wrap.getBoundingClientRect();
   pinch = { d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, s0: view.s, tx0: view.tx, ty0: view.ty, cx: r.left + r.width / 2 - view.tx, cy: r.top + r.height / 2 - view.ty };
@@ -666,6 +715,8 @@ function setTool(id) {
   tool = id;
   document.querySelectorAll('.tool').forEach((x) => x.classList.toggle('on', x.dataset.tool === id));
   updateToolUI();
+  updateMirrorUI();
+  compose();
 }
 
 const sizeEl = $('#size'), opEl = $('#opacity');
@@ -690,12 +741,45 @@ function updateToolUI() {
 sizeEl.addEventListener('input', () => { cfg[tool].size = +sizeEl.value; updateToolUI(); });
 opEl.addEventListener('input', () => { cfg[tool].op = +opEl.value / 100; updateToolUI(); });
 
-$('#symBtn').addEventListener('click', () => {
-  symmetry = (symmetry + 1) % 4;
-  $('#symBtn').textContent = ['⇋ Mirror: off', '⇋ Mirror: left/right', '⇵ Mirror: up/down', '✛ Mirror: both'][symmetry];
-  $('#symBtn').classList.toggle('on', !!symmetry);
+// ----- mirror lines -----
+// drag with the Mirror tool to place a dotted line; it snaps to straight or 45 degrees when you are close
+function snapLine(x0, y0, x1, y1) {
+  const dx = x1 - x0, dy = y1 - y0, len = Math.hypot(dx, dy);
+  if (len < 1) return [x0, y0, x1, y1];
+  const ang = Math.atan2(dy, dx), step = Math.PI / 4, near = Math.round(ang / step) * step;
+  if (Math.abs(ang - near) < (6 * Math.PI) / 180) return [x0, y0, x0 + Math.cos(near) * len, y0 + Math.sin(near) * len];
+  return [x0, y0, x1, y1];
+}
+const distToLine = (px, py, [x1, y1, x2, y2]) => { const len = Math.hypot(x2 - x1, y2 - y1) || 1; return Math.abs((x2 - x1) * (y1 - py) - (x1 - px) * (y2 - y1)) / len; };
+function addMirrorLine(l) {
+  mirrorLines.push(l.map((n) => Math.round(n * 10) / 10));
+  if (mirrorLines.length > 3) mirrorLines.shift();     // three lines (eight copies) is the most
+  mirrorOn = true; updateMirrorUI(); compose();
+}
+function finishMirrorDrag(md, x, y) {
+  const l = md.line;
+  if (l && Math.hypot(l[2] - l[0], l[3] - l[1]) >= 60) return addMirrorLine(l);
+  // a tap: remove the mirror line it lands on
+  let best = -1, bd = 40;
+  mirrorLines.forEach((ml, i) => { const d = distToLine(x, y, ml); if (d < bd) { bd = d; best = i; } });
+  if (best >= 0) { mirrorLines.splice(best, 1); if (!mirrorLines.length) mirrorOn = false; updateMirrorUI(); toast('Mirror line removed'); }
   compose();
+}
+function updateMirrorUI() {
+  const n = mirrorLines.length, on = mirrorOn && n > 0;
+  $('#symBtn').textContent = on ? `⇋ Mirror: on (${n} line${n > 1 ? 's' : ''})` : '⇋ Mirror: off';
+  $('#symBtn').classList.toggle('on', on);
+  $('#mirbar').hidden = tool !== 'mirror';
+  $('#mirUndo').disabled = !n; $('#mirClear').disabled = !n;
+}
+$('#symBtn').addEventListener('click', () => {
+  if (!mirrorLines.length) { addMirrorLine([W / 2, 0, W / 2, H]); toast('Mirror line added in the middle. Use the Mirror tool to place your own'); return; }
+  mirrorOn = !mirrorOn; updateMirrorUI(); compose();
 });
+$('#mirV').addEventListener('click', () => addMirrorLine([W / 2, 0, W / 2, H]));
+$('#mirH').addEventListener('click', () => addMirrorLine([0, H / 2, W, H / 2]));
+$('#mirUndo').addEventListener('click', () => { mirrorLines.pop(); if (!mirrorLines.length) mirrorOn = false; updateMirrorUI(); compose(); });
+$('#mirClear').addEventListener('click', () => { mirrorLines = []; mirrorOn = false; updateMirrorUI(); compose(); });
 $('#smooth').addEventListener('input', (e) => { smooth = +e.target.value; $('#smoothLabel').textContent = smooth ? `Smooth ${smooth}` : 'Smooth off'; });
 $('#fillShape').addEventListener('click', () => { fillShapes = !fillShapes; $('#fillShape').textContent = fillShapes ? '▮ Filled' : '▭ Outline'; $('#fillShape').classList.toggle('on', fillShapes); });
 
@@ -977,6 +1061,7 @@ document.querySelector('.tool[data-tool=pen]').classList.add('on');
 uiReady = true;
 setColor(color);
 updateToolUI();
+updateMirrorUI();
 renderLayersUI();
 renderAll();
 

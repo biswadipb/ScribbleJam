@@ -118,6 +118,13 @@
   #hexIn { font: inherit; color: var(--text); background: var(--bg2); border: 0; border-radius: 10px; padding: 10px; width: 100%; }
   .sheet button.primary { text-align: center; }
   .sheet button.danger { color: #d93025; text-align: center; }
+  #mirbar { position: absolute; left: 8px; right: 8px; top: 8px; background: var(--bg); border-radius: 12px; padding: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.25); z-index: 6; display: grid; gap: 6px; }
+  #mirbar[hidden] { display: none; }
+  #mirbar:not([hidden]) ~ #joinbar { top: 118px; }
+  #mirbar .mhint { font-size: 12px; color: var(--hint); }
+  #mirbar .mbtns { display: flex; gap: 6px; flex-wrap: wrap; }
+  #mirbar button { padding: 6px 9px; font-size: 13px; }
+  #mirbar button:disabled { opacity: .4; }
   #joinbar { position: absolute; left: 8px; right: 8px; top: 8px; display: grid; gap: 6px; z-index: 7; }
   #joinbar[hidden] { display: none; }
   .jrow { background: var(--bg); border-radius: 12px; padding: 8px 10px; display: flex; gap: 6px; align-items: center; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
@@ -149,6 +156,10 @@
   <div id="stage">
     <div id="wrap"><canvas id="cv" width="1024" height="1024"></canvas><canvas id="ov" width="1024" height="1024"></canvas></div>
     <button id="zoomReset" title="Reset zoom" hidden>⤢ Fit</button>
+    <div id="mirbar" hidden>
+      <span class="mhint">Drag on the canvas to place a dotted mirror line. Tap a line to remove it.</span>
+      <span class="mbtns"><button id="mirV">↔ Middle</button><button id="mirH">↕ Middle</button><button id="mirUndo">Undo line</button><button id="mirClear">Clear</button></span>
+    </div>
     <div id="joinbar" hidden></div>
   </div>
   <div class="tools">

@@ -185,19 +185,29 @@ const FILL_WEIGHT = 30000;       // a bucket fill covers a lot, but how much is 
 // "Insignificant" means 10 against 90: someone who drew less than 10 for every 90 the biggest contributor drew is not named.
 const CREDIT_P = Number(process.env.CREDIT_MIN_PERCENT) || 10;
 const CREDIT_RATIO = CREDIT_P / (100 - CREDIT_P);   // 10/90 = 0.111 of the biggest contributor's amount
-const mirrorCount = (sym) => (sym === 3 ? 4 : sym ? 2 : 1);
+const mirrorCount = (o) => (o.mir?.length ? 2 ** o.mir.length : o.sym === 3 ? 4 : o.sym ? 2 : 1);
+function cleanMir(m) { // user-placed mirror lines: up to 3, each [x1, y1, x2, y2]
+  if (!Array.isArray(m)) return undefined;
+  const out = [];
+  for (const l of m.slice(0, 3)) {
+    if (!Array.isArray(l) || l.length !== 4) continue;
+    const v = l.map((n) => num(n, -300, 3300, 0));
+    if (Math.hypot(v[2] - v[0], v[3] - v[1]) >= 1) out.push(v);
+  }
+  return out.length ? out : undefined;
+}
 function inkOf(o) {
   if (o.k === 'stroke') {
     if (o.tool === 'eraser') return 0; // erasing is not drawing
     const w = o.size * (WIDTH_OF[o.tool] ?? 1);
     let len = 0;
     for (let i = 2; i < o.pts.length; i += 2) len += Math.hypot(o.pts[i] - o.pts[i - 2], o.pts[i + 1] - o.pts[i - 1]);
-    return (len + w) * w * mirrorCount(o.sym);
+    return (len + w) * w * mirrorCount(o);
   }
   if (o.k === 'shape') {
     const dx = Math.abs(o.x2 - o.x1), dy = Math.abs(o.y2 - o.y1);
     const outline = (o.shape === 'line' ? Math.hypot(dx, dy) : 2 * (dx + dy)) * o.size;
-    return (outline + (o.f && o.shape !== 'line' ? dx * dy : 0)) * mirrorCount(o.sym);
+    return (outline + (o.f && o.shape !== 'line' ? dx * dy : 0)) * mirrorCount(o);
   }
   if (o.k === 'fill') return FILL_WEIGHT;
   return 0; // moves don't add anything
@@ -455,7 +465,7 @@ function cleanOp(o, layers) {
       if (!TOOLS.has(o.tool) || !Array.isArray(o.pts) || o.pts.length > MAX_PTS) return null;
       return {
         ...base, tool: o.tool, color: colour(o.color), size: num(o.size, 1, 200, 6), op: num(o.op, 0.02, 1, 1),
-        sym: num(o.sym | 0, 0, 3, 0), pts: o.pts.map((n) => num(n, -300, 3300, 0)),
+        sym: num(o.sym | 0, 0, 3, 0), ...(cleanMir(o.mir) ? { mir: cleanMir(o.mir) } : {}), pts: o.pts.map((n) => num(n, -300, 3300, 0)),
         ...(Array.isArray(o.pr) ? { pr: o.pr.slice(0, MAX_PTS / 2).map((n) => num(n, 0, 100, 50)) } : {}),
       };
     case 'fill':
@@ -464,7 +474,7 @@ function cleanOp(o, layers) {
       if (!SHAPES.has(o.shape)) return null;
       return {
         ...base, shape: o.shape, x1: num(o.x1, -300, 3300, 0), y1: num(o.y1, -300, 3300, 0), x2: num(o.x2, -300, 3300, 0), y2: num(o.y2, -300, 3300, 0),
-        color: colour(o.color), size: num(o.size, 1, 200, 6), op: num(o.op, 0.02, 1, 1), f: !!o.f, sym: num(o.sym | 0, 0, 3, 0),
+        color: colour(o.color), size: num(o.size, 1, 200, 6), op: num(o.op, 0.02, 1, 1), f: !!o.f, sym: num(o.sym | 0, 0, 3, 0), ...(cleanMir(o.mir) ? { mir: cleanMir(o.mir) } : {}),
       };
     default: return null;
   }
