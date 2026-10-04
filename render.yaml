@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: scribblejam
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: PUBLIC_URL
+        sync: false
+      - key: MINIAPP_SHORT
+        value: draw
