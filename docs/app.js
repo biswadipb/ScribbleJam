@@ -4,7 +4,10 @@ tg?.expand();
 
 const $ = (s) => document.querySelector(s);
 const API = (window.SJ_API || '').replace(/\/$/, ''); // '' = same server as this page
-const S = 1024; // logical canvas size
+// Canvas presets (max side 1024). 'square' is the standard size.
+const PRESETS = { square: [1024, 1024], portrait: [768, 1024], landscape: [1024, 768], wide: [1024, 576], story: [576, 1024] };
+let sizeKey = 'square';
+let [W, H] = PRESETS.square;
 const cv = $('#cv');
 const ctx = cv.getContext('2d', { willReadFrequently: true });
 
@@ -19,12 +22,13 @@ $('#mode').textContent = mode === 'together' ? '👥 together' : '✏️ alone';
 
 // ---------- state ----------
 const ops = [];
-let bg = 'white';
+let bg = '#ffffff'; // canvas colour: a hex colour, or 'transparent'
 let tool = 'pencil';
 let color = '#000000';
 const sizes = { pencil: 6, pen: 8, brush: 16, eraser: 24 }; // each tool remembers its own size
 let size = sizes.pencil;
 let ws = null;
+let uiReady = false; // set once the toolbar exists
 
 const COLORS = ['#000000', '#ffffff', '#e53935', '#fb8c00', '#fdd835', '#43a047', '#00acc1', '#1e88e5', '#5e35b1', '#d81b60', '#8d6e63', '#9e9e9e'];
 
@@ -65,18 +69,18 @@ function hexToRgb(h) { const n = parseInt(h.slice(1), 16); return [n >> 16, (n >
 
 // Deterministic so every participant ends up with the same pixels.
 function floodFill(x0, y0, hex) {
-  x0 = Math.max(0, Math.min(S - 1, Math.round(x0)));
-  y0 = Math.max(0, Math.min(S - 1, Math.round(y0)));
-  const img = ctx.getImageData(0, 0, S, S), d = img.data;
-  const t = (y0 * S + x0) * 4;
+  x0 = Math.max(0, Math.min(W - 1, Math.round(x0)));
+  y0 = Math.max(0, Math.min(H - 1, Math.round(y0)));
+  const img = ctx.getImageData(0, 0, W, H), d = img.data;
+  const t = (y0 * W + x0) * 4;
   const tr = d[t], tg_ = d[t + 1], tb = d[t + 2], ta = d[t + 3];
   const [fr, fg, fb] = hexToRgb(hex);
   const clear = ta < 10;
   const match = (i) => clear
     ? d[i + 3] <= 150
     : Math.abs(d[i] - tr) + Math.abs(d[i + 1] - tg_) + Math.abs(d[i + 2] - tb) + Math.abs(d[i + 3] - ta) <= 60;
-  const seen = new Uint8Array(S * S);
-  const stack = [y0 * S + x0];
+  const seen = new Uint8Array(W * H);
+  const stack = [y0 * W + x0];
   while (stack.length) {
     const pi = stack.pop();
     if (seen[pi]) continue;
@@ -88,11 +92,11 @@ function floodFill(x0, y0, hex) {
     d[i + 1] = d[i + 1] * a + fg * (1 - a);
     d[i + 2] = d[i + 2] * a + fb * (1 - a);
     d[i + 3] = 255;
-    const x = pi % S;
+    const x = pi % W;
     if (x > 0) stack.push(pi - 1);
-    if (x < S - 1) stack.push(pi + 1);
-    if (pi >= S) stack.push(pi - S);
-    if (pi < S * (S - 1)) stack.push(pi + S);
+    if (x < W - 1) stack.push(pi + 1);
+    if (pi >= W) stack.push(pi - W);
+    if (pi < W * (H - 1)) stack.push(pi + W);
   }
   ctx.putImageData(img, 0, 0);
 }
@@ -103,7 +107,7 @@ function applyOp(op) {
 }
 
 function renderAll() {
-  ctx.clearRect(0, 0, S, S);
+  ctx.clearRect(0, 0, W, H);
   for (const op of ops) { op._n = 0; applyOp(op); }
 }
 
@@ -116,12 +120,13 @@ function connect() {
   ws = new WebSocket(`${proto}://${base.host}/ws?token=${token}&initData=${encodeURIComponent(initData)}`);
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
-    if (m.t === 'init') { ops.length = 0; ops.push(...m.ops); setBg(m.bg, false); renderAll(); peers(m.peers); }
+    if (m.t === 'init') { ops.length = 0; ops.push(...m.ops); setBg(m.bg, false); setCanvasSize(m.size || 'square', false); renderAll(); peers(m.peers); }
     else if (m.t === 'op') { ops.push(m.op); applyOp(m.op); }
     else if (m.t === 'pts') { const o = ops.find((o) => o.id === m.id); if (o) { o.pts.push(...m.pts); paintStroke(o); } }
     else if (m.t === 'remove') { const i = ops.findIndex((o) => o.id === m.id); if (i >= 0) { ops.splice(i, 1); renderAll(); } }
     else if (m.t === 'clear') { ops.length = 0; renderAll(); }
     else if (m.t === 'bg') setBg(m.bg, false);
+    else if (m.t === 'size') setCanvasSize(m.size, false);
     else if (m.t === 'peers') peers(m.n);
   };
   ws.onclose = () => { toast('Disconnected - reconnecting…'); setTimeout(connect, 1500); };
@@ -134,7 +139,7 @@ let cur = null, buf = [], flushTimer = null;
 
 function pos(e) {
   const r = cv.getBoundingClientRect();
-  return [((e.clientX - r.left) / r.width) * S, ((e.clientY - r.top) / r.height) * S];
+  return [((e.clientX - r.left) / r.width) * W, ((e.clientY - r.top) / r.height) * H];
 }
 const newId = () => Math.random().toString(36).slice(2, 10);
 
@@ -176,8 +181,10 @@ wrap.addEventListener('pointercancel', end);
 // ---------- layout ----------
 function fit() {
   const st = $('#stage');
-  const s = Math.floor(Math.min(st.clientWidth, st.clientHeight) - 16);
-  wrap.style.width = wrap.style.height = Math.max(120, s) + 'px';
+  const k = Math.min((st.clientWidth - 16) / W, (st.clientHeight - 16) / H);
+  wrap.style.width = Math.max(100, Math.floor(W * k)) + 'px';
+  wrap.style.height = Math.max(100, Math.floor(H * k)) + 'px';
+  if (uiReady) showSize();
 }
 addEventListener('resize', fit);
 new ResizeObserver(fit).observe($('#stage'));
@@ -207,7 +214,7 @@ pal.appendChild(custom);
 function setColor(c) {
   color = c;
   document.querySelectorAll('.sw').forEach((b) => b.classList.toggle('sel', b.dataset.c === c));
-  if (typeof showSize === 'function' && sizeEl) showSize();
+  if (uiReady) showSize();
 }
 
 const sizeEl = $('#size');
@@ -217,7 +224,7 @@ function showSize() {
   sizeEl.value = size;
   $('#sizeLabel').textContent = fill ? 'Bucket has no size' : `${tool} size ${size}`;
   // preview dot = real on-screen thickness of the stroke
-  const px = fill ? 6 : widthOf(tool, size) * (wrap.clientWidth / S);
+  const px = fill ? 6 : widthOf(tool, size) * (wrap.clientWidth / W);
   const d = Math.max(2, Math.min(34, px));
   $('#dot i').style.width = $('#dot i').style.height = d + 'px';
   $('#dot i').style.background = tool === 'eraser' ? 'transparent' : color;
@@ -225,6 +232,7 @@ function showSize() {
 }
 sizeEl.addEventListener('input', () => { size = sizes[tool] = +sizeEl.value; showSize(); });
 showSize();
+uiReady = true;
 setColor(color);
 
 $('#undo').addEventListener('click', () => {
@@ -237,22 +245,67 @@ $('#clear').addEventListener('click', () => {
 });
 
 function setBg(v, announce = true) {
+  if (v === 'white') v = '#ffffff';
   bg = v;
   wrap.classList.toggle('transparent', v === 'transparent');
-  $('#bg').textContent = v === 'white' ? '⬜ White' : '🔳 Clear';
+  wrap.style.backgroundColor = v === 'transparent' ? '' : v;
+  document.querySelectorAll('.csw').forEach((b) => b.classList.toggle('sel', b.dataset.c === v));
   if (announce && mode === 'together') send({ t: 'bg', bg: v });
 }
-$('#bg').addEventListener('click', () => setBg(bg === 'white' ? 'transparent' : 'white'));
+
+function setCanvasSize(key, announce = true) {
+  if (!PRESETS[key]) return;
+  sizeKey = key;
+  [W, H] = PRESETS[key];
+  cv.width = W; cv.height = H; // resizing clears the bitmap, so redraw everything
+  document.querySelectorAll('.csize').forEach((b) => b.classList.toggle('sel', b.dataset.size === key));
+  fit();
+  renderAll();
+  if (announce && mode === 'together') send({ t: 'size', size: key });
+}
+
+// ---- canvas settings sheet (size + colour) ----
+const csheet = $('#csheet');
+$('#bg').addEventListener('click', () => csheet.classList.add('show'));
+csheet.addEventListener('click', (e) => { if (e.target === csheet || e.target.dataset.act === 'done') csheet.classList.remove('show'); });
+
+document.querySelectorAll('.csize').forEach((b) => b.addEventListener('click', () => {
+  const key = b.dataset.size;
+  if (key === sizeKey) return;
+  if (ops.length && !confirm((mode === 'together' ? 'Everyone will get a new canvas size. ' : '') + 'Parts of the drawing outside the new size will be cropped. Continue?')) return;
+  setCanvasSize(key);
+}));
+
+const cpal = $('#cpalette');
+['#ffffff', '#fffdf6', '#fde68a', '#fecaca', '#bfdbfe', '#bbf7d0', '#e9d5ff', '#d1d5db', '#6b7280', '#22223b', '#111111'].forEach((c) => {
+  const b = document.createElement('button');
+  b.className = 'sw csw'; b.style.background = c; b.dataset.c = c;
+  b.addEventListener('click', () => setBg(c));
+  cpal.appendChild(b);
+});
+const clear = document.createElement('button');
+clear.className = 'sw csw checker'; clear.dataset.c = 'transparent'; clear.title = 'No background (transparent)';
+clear.addEventListener('click', () => setBg('transparent'));
+cpal.appendChild(clear);
+const ccustom = document.createElement('div');
+ccustom.className = 'sw custom';
+ccustom.innerHTML = '<input type="color" value="#ffffff">';
+ccustom.querySelector('input').addEventListener('input', (e) => setBg(e.target.value));
+cpal.appendChild(ccustom);
+setBg(bg, false);
+document.querySelector('.csize[data-size=square]').classList.add('sel');
 
 // ---------- export ----------
-function exportPng(size, withBg) {
+// scale: 1 = full canvas; background: a colour or null for transparent.
+function exportPng(scale, background) {
   const out = document.createElement('canvas');
-  out.width = out.height = size;
+  out.width = Math.round(W * scale); out.height = Math.round(H * scale);
   const c = out.getContext('2d');
-  if (withBg) { c.fillStyle = '#fff'; c.fillRect(0, 0, size, size); }
-  c.drawImage(cv, 0, 0, size, size);
+  if (background) { c.fillStyle = background; c.fillRect(0, 0, out.width, out.height); }
+  c.drawImage(cv, 0, 0, out.width, out.height);
   return out.toDataURL('image/png');
 }
+const solidBg = () => (bg === 'transparent' ? '#ffffff' : bg);
 
 async function api(action, png, extra = {}) {
   if (!serverUp) { toast('Waking the server up… one moment'); await ready; }
@@ -276,14 +329,14 @@ sheet.addEventListener('click', async (e) => {
   if (act === 'close') return;
   try {
     if (act === 'print') {
-      await api('print', exportPng(1024, bg === 'white'), { bg });
+      await api('print', exportPng(1, bg === 'transparent' ? null : bg), { bg: bg === 'transparent' ? 'transparent' : 'solid' });
       toast('Sent to the chat 🎉');
     } else if (act === 'story') {
-      const { url } = await api('story', exportPng(1024, true));
+      const { url } = await api('story', exportPng(1, solidBg()));
       if (tg?.shareToStory && tg.isVersionAtLeast?.('7.8')) tg.shareToStory(url, { text: '🎨' });
       else toast('Your Telegram is too old for stories - please update it');
     } else {
-      const { link } = await api('sticker', exportPng(512, act === 'sticker-white'));
+      const { link } = await api('sticker', exportPng(512 / Math.max(W, H), act === 'sticker-white' ? solidBg() : null));
       toast('Sticker added! 🏷️');
       if (tg?.openTelegramLink) tg.openTelegramLink(link); else window.open(link);
     }

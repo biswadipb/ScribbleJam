@@ -14,6 +14,7 @@ if (!BOT_TOKEN && !DEV) {
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'docs');
 const MAX_OPS = 3000;
+const SIZES = new Set(['square', 'portrait', 'landscape', 'wide', 'story']);
 const MAX_PTS = 20000; // numbers per stroke
 
 // Session tokens are signed and self-contained ("<chat>x<nonce>x<sig>"), so they keep working
@@ -206,11 +207,11 @@ function broadcast(room, msg, except) {
 
 function onConnect(ws, user, token) {
   let room = rooms.get(token);
-  if (!room) rooms.set(token, (room = { ops: [], bg: 'white', clients: new Set(), users: new Map() }));
+  if (!room) rooms.set(token, (room = { ops: [], bg: '#ffffff', size: 'square', clients: new Set(), users: new Map() }));
   room.users.set(user.id, user);
   const me = { ws, uid: user.id };
   room.clients.add(me);
-  ws.send(JSON.stringify({ t: 'init', ops: room.ops, bg: room.bg, peers: room.clients.size }));
+  ws.send(JSON.stringify({ t: 'init', ops: room.ops, bg: room.bg, size: room.size, peers: room.clients.size }));
   broadcast(room, { t: 'peers', n: room.clients.size });
 
   ws.on('message', (raw) => {
@@ -249,7 +250,8 @@ function onConnect(ws, user, token) {
         break;
       }
       case 'clear': room.ops = []; broadcast(room, { t: 'clear' }); break;
-      case 'bg': if (m.bg === 'white' || m.bg === 'transparent') { room.bg = m.bg; broadcast(room, { t: 'bg', bg: m.bg }); } break;
+      case 'bg': if (m.bg === 'transparent' || /^#[0-9a-fA-F]{6}$/.test(m.bg)) { room.bg = m.bg; broadcast(room, { t: 'bg', bg: m.bg }); } break;
+      case 'size': if (SIZES.has(m.size)) { room.size = m.size; broadcast(room, { t: 'size', size: m.size }); } break;
     }
   });
 

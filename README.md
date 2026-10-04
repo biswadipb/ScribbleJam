@@ -29,3 +29,4 @@ on GitHub Pages (always on, free) and let it wake the server:
 4. Keep `PUBLIC_URL` on Render as the Render address (the webhook and story images still use it).
 
 Draw-alone opens instantly (the server wakes in the background); draw-together shows the splash until it is awake.
+- Canvas: starts as a white standard square (1024×1024). 🖼️ Canvas lets you pick Square, Portrait, Landscape, Wide or Story, and any background colour or none (transparent). In a shared room, size and colour change for everyone.

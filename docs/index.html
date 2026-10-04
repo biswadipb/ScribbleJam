@@ -45,11 +45,18 @@
   input[type=range] { flex: 1; accent-color: var(--accent); }
   #dot { width: 34px; height: 34px; display: grid; place-items: center; flex: none; }
   #dot i { display: block; border-radius: 50%; background: var(--text); }
-  #sheet { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; align-items: flex-end; }
-  #sheet.show { display: flex; }
-  #sheet .card { background: var(--bg); width: 100%; border-radius: 16px 16px 0 0; padding: 14px; display: grid; gap: 8px; padding-bottom: calc(14px + env(safe-area-inset-bottom)); }
-  #sheet h3 { margin: 0 0 4px; }
+  .sw.checker { background-color: #fff; background-image: linear-gradient(45deg,#ccc 25%,transparent 25%,transparent 75%,#ccc 75%), linear-gradient(45deg,#ccc 25%,transparent 25%,transparent 75%,#ccc 75%); background-size: 10px 10px; background-position: 0 0, 5px 5px; }
+  .sizes { display: flex; gap: 8px; flex-wrap: wrap; }
+  .csize { flex: 1 1 28%; display: grid; justify-items: center; gap: 4px; padding: 10px 4px; text-align: center; font-size: 12px; }
+  .csize i { display: block; border: 2px solid currentColor; border-radius: 3px; opacity: .75; }
+  .csize.sel { outline: 2px solid var(--accent); }
+  #csheet h4 { margin: 6px 0 0; font-size: 13px; color: var(--hint); font-weight: 600; }
+  #sheet, #csheet { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; align-items: flex-end; }
+  #sheet.show, #csheet.show { display: flex; }
+  #sheet .card, #csheet .card { background: var(--bg); width: 100%; border-radius: 16px 16px 0 0; padding: 14px; display: grid; gap: 8px; padding-bottom: calc(14px + env(safe-area-inset-bottom)); }
+  #sheet h3, #csheet h3 { margin: 0 0 4px; }
   #sheet button { text-align: left; padding: 12px; }
+  #csheet .sw { width: 34px; height: 34px; }
   #toast { position: fixed; left: 50%; top: 60px; transform: translateX(-50%); background: #222; color: #fff; padding: 8px 14px; border-radius: 20px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90%; text-align: center; }
   #toast.show { opacity: 1; }
 
@@ -76,7 +83,7 @@
   <div class="bar">
     <button id="undo" title="Undo">↩️</button>
     <button id="clear" title="Clear">🗑️</button>
-    <button id="bg" title="Background">⬜ White</button>
+    <button id="bg" title="Canvas size and colour">🖼️ Canvas</button>
     <span class="sp"></span>
     <span class="badge" id="mode"></span>
     <button id="share" class="primary">Finish ✓</button>
@@ -99,9 +106,23 @@
   <h3>Finished? 🎉</h3>
   <button data-act="print">🖼️ Send picture to the chat</button>
   <button data-act="story">📱 Post to my story</button>
-  <button data-act="sticker-white">🏷️ Make a sticker (white background)</button>
+  <button data-act="sticker-white">🏷️ Make a sticker (with canvas colour)</button>
   <button data-act="sticker-clear">🏷️ Make a sticker (no background)</button>
   <button data-act="close">Keep drawing</button>
+</div></div>
+<div id="csheet"><div class="card">
+  <h3>Canvas 🖼️</h3>
+  <h4>Size</h4>
+  <div class="sizes">
+    <button class="csize" data-size="square"><i style="width:26px;height:26px"></i>Square<br>standard</button>
+    <button class="csize" data-size="portrait"><i style="width:21px;height:28px"></i>Portrait<br>3:4</button>
+    <button class="csize" data-size="landscape"><i style="width:28px;height:21px"></i>Landscape<br>4:3</button>
+    <button class="csize" data-size="wide"><i style="width:32px;height:18px"></i>Wide<br>16:9</button>
+    <button class="csize" data-size="story"><i style="width:16px;height:28px"></i>Story<br>9:16</button>
+  </div>
+  <h4>Colour</h4>
+  <div class="row scroll" id="cpalette"></div>
+  <button data-act="done" class="primary">Done</button>
 </div></div>
 <div id="boot"><div>
   <div class="sparks"><i style="left:12%;top:16%">⭐</i><i style="right:14%;top:22%;animation-delay:.6s">✏️</i><i style="left:16%;bottom:18%;animation-delay:1.1s">🎨</i><i style="right:12%;bottom:14%;animation-delay:1.7s">🖍️</i></div>
