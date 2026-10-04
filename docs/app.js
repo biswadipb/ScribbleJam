@@ -210,9 +210,11 @@ function paintStroke(op, c) {
     } else {
       c.lineWidth = w;
       if (op.tool === 'brush') c.shadowBlur = w * 0.4;
-      c.beginPath();
       let k = i;
-      if (k === 0) { c.moveTo(X(0), Y(0)); c.lineTo(X(0), Y(0)); k = 1; } else c.moveTo(X(k - 1), Y(k - 1));
+      // the first point is an explicit filled dot: browsers disagree about drawing a zero-length line with round ends,
+      // and a single click or tap must always leave a dot
+      if (k === 0) { c.beginPath(); c.arc(X(0), Y(0), Math.max(0.5, w / 2), 0, Math.PI * 2); c.fill(); k = 1; }
+      c.beginPath(); c.moveTo(X(k - 1), Y(k - 1));
       for (; k < n; k++) c.lineTo(X(k), Y(k));
       c.stroke();
     }
