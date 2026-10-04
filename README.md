@@ -16,7 +16,7 @@ For real Telegram testing locally, run a tunnel (`cloudflared tunnel --url http:
 ## Notes
 - Sessions/rooms are in memory: a Render restart or sleep clears them (send `/draw` again).
 - Stickers: each user gets one pack `d<userid>_by_<bot>`; Telegram caps packs at 120 stickers.
-- Finished doodles are captioned `Doodle by @username` (or the person's name if they have no username). In a shared room, everyone who drew is listed.
+- Pressing **Finish** posts the picture to the chat it was started from, captioned `Drawn by @username` (people without a username are tagged by name, and without a name by user id). In a shared room everyone who drew is listed, and each version of the drawing is posted once.
 - Each tool (pencil, pen, brush, eraser) has its own adjustable size; the bucket has none.
 
 ## Skipping Render's "service waking up" screen
@@ -30,4 +30,13 @@ on GitHub Pages (always on, free) and let it wake the server:
 
 Draw-alone opens instantly (the server wakes in the background); draw-together shows the splash until it is awake.
 - Canvas: starts as a white standard square (1024×1024). 🖼️ Canvas lets you pick Square, Portrait, Landscape, Wide or Story, and any background colour or none (transparent). In a shared room, size and colour change for everyone.
-- Finishing: send to the chat, send to another chat (Telegram share dialog, needs Telegram 8.0+), share to other apps / save image, post to story, or make a sticker. A small "Drawn with ScribbleJam by <names>" credit sits in the bottom-right corner of exported images (can be switched off in the Finish sheet; never added to stickers).
+- After Finish: send to another chat (Telegram share dialog, needs Telegram 8.0+), share to other apps, save the image, post to story, or make a sticker. Every picture carries a deep purple "Drawn by <names>" footer with the ScribbleJam logo (never on stickers).
+
+## Drawing tools
+- **Brushes:** pencil, ink pen, marker, soft brush, airbrush, chalk, highlighter and an eraser, each with its own size and opacity. Pen pressure is used when the device reports it.
+- **Also:** paint bucket, colour picker (eyedropper), line / rectangle / ellipse (outline or filled), text, and a rectangle **Select** tool to move, rotate and scale part of a layer.
+- **Layers** (up to 8): add, hide, reorder, rename, delete, per-layer opacity and blend mode (normal, multiply, screen, overlay, darken, lighten). They sync live in a shared room.
+- **Mirror drawing** (left/right, up/down, both), stroke **smoothing**, undo / **redo**, and **pinch to zoom / pan** (a *Fit* button resets the view).
+- **Colours:** 12 quick slots plus a full colour picker (colour square + hue) that remembers your recent colours.
+- Everything drawn is a list of operations (`stroke`, `fill`, `shape`, `text`, `move`), each tagged with its layer; the server validates every operation before relaying it.
+- Layer blend modes are applied on top of the canvas colour at export time only approximately: the canvas colour sits behind all layers, so e.g. *screen* over a white canvas is not identical to a paint app that treats the background as a layer.

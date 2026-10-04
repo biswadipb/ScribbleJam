@@ -39,6 +39,10 @@ const rand = (n = 6) => crypto.randomBytes(n).toString('hex');
 // ---------- Telegram initData verification ----------
 function verifyInitData(initData) {
   if (DEV && initData === 'dev') return { id: 1, first_name: 'Dev' };
+  if (DEV && initData?.startsWith('dev:')) { // test helper: "dev:<id>:<first name>[:<username>]"
+    const [, id, first_name, username] = initData.split(':');
+    return { id: Number(id), first_name, ...(username ? { username } : {}) };
+  }
   if (!initData || !BOT_TOKEN) return null;
   const p = new URLSearchParams(initData);
   const hash = p.get('hash');
@@ -58,6 +62,11 @@ function verifyInitData(initData) {
 
 // ---------- Bot ----------
 const bot = BOT_TOKEN ? new Bot(BOT_TOKEN) : null;
+// In DEV (no token) sends are just logged, so the Finish flow can be tested without Telegram.
+const tgApi = bot ? bot.api : DEV ? {
+  sendPhoto: async (chat, _f, o) => console.log('DEV sendPhoto', JSON.stringify(o.caption)),
+  sendDocument: async (chat, _f, o) => console.log('DEV sendDocument', JSON.stringify(o.caption)),
+} : null;
 
 if (bot) {
   bot.command(['draw', 'start'], async (ctx) => {
@@ -75,8 +84,15 @@ if (bot) {
 }
 
 // ---------- Captions ----------
-// "@username" if they have one (Telegram turns it into a mention), otherwise their name.
-const label = (u) => (u.username ? `@${u.username}` : [u.first_name, u.last_name].filter(Boolean).join(' ') || 'Someone');
+const realName = (u) => [u.first_name, u.last_name].filter(Boolean).join(' ');
+
+// How to tag someone: @username if they have one; otherwise their name (as a real clickable mention);
+// otherwise, in the rare case there is no name either, their user id (also a real mention).
+function mentionOf(u) {
+  if (u.username) return { text: `@${u.username}` };
+  const name = realName(u);
+  return { text: name || `User ${u.id}`, userId: u.id, first_name: u.first_name || name || `User ${u.id}` };
+}
 
 // Everyone who drew in a shared room; otherwise just the person who finished it.
 function artists(token, finisher, mode) {
@@ -85,14 +101,21 @@ function artists(token, finisher, mode) {
   return list.length ? list : [finisher];
 }
 
-// Full display name (no @), used for the "Drawn with ScribbleJam by ..." tag on images.
-const fullName = (u) => [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username || 'Someone';
-
+// "Drawn by @a, Sam and User 42" plus entities so people without a username are still tagged.
 function doodleCaption(users) {
-  const names = users.map(label);
-  const who = names.length < 2 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
-  return `Doodle by ${who}`;
+  const parts = users.map(mentionOf);
+  let caption = 'Drawn by ';
+  const entities = [];
+  parts.forEach((p, i) => {
+    if (i > 0) caption += i === parts.length - 1 ? ' and ' : ', ';
+    if (p.userId) entities.push({ type: 'text_mention', offset: caption.length, length: p.text.length, user: { id: p.userId, is_bot: false, first_name: p.first_name } });
+    caption += p.text;
+  });
+  return { caption, entities };
 }
+
+// Full display name (no @) for the footer on the picture. Falls back to username, then the id.
+const fullName = (u) => realName(u) || u.username || `User ${u.id}`;
 
 // ---------- Export (print / story / sticker) ----------
 async function handleExport(body) {
@@ -111,12 +134,19 @@ async function handleExport(body) {
   const name = user.first_name || 'Someone';
 
   if (body.action === 'print') {
+    // In a shared room several people may press Finish: post each version of the drawing once.
+    const room = body.mode === 'together' ? rooms.get(body.token) : null;
+    if (room && room.posted === room.version) return [200, { ok: true, duplicate: true }];
+    const sentVersion = room?.version;
+    if (room) room.posted = sentVersion; // claim it first so a simultaneous Finish doesn't post twice
     const file = new InputFile(buf, 'drawing.png');
-    const caption = doodleCaption(artists(body.token, user, body.mode));
-    if (body.bg === 'transparent') {
-      await bot.api.sendDocument(session.chatId, file, { caption });
-    } else {
-      await bot.api.sendPhoto(session.chatId, file, { caption });
+    const { caption, entities } = doodleCaption(artists(body.token, user, body.mode));
+    try {
+      if (body.bg === 'transparent') await tgApi.sendDocument(session.chatId, file, { caption, caption_entities: entities });
+      else await tgApi.sendPhoto(session.chatId, file, { caption, caption_entities: entities });
+    } catch (e) {
+      if (room && room.posted === sentVersion) room.posted = -1;
+      throw e;
     }
     return [200, { ok: true }];
   }
@@ -133,12 +163,13 @@ async function handleExport(body) {
     const id = rand(8);
     images.set(id, { buf, type: 'image/jpeg', exp: Date.now() + 2 * 3600_000 });
     const url = `${PUBLIC_URL}/img/${id}.jpg`;
+    const { caption, entities } = doodleCaption(artists(body.token, user, body.mode));
     const prepared = await bot.api.savePreparedInlineMessage(
       user.id,
       {
         type: 'photo', id: `sj${id}`, photo_url: url, thumbnail_url: url,
         photo_width: Number(body.w) || undefined, photo_height: Number(body.h) || undefined,
-        caption: doodleCaption(artists(body.token, user, body.mode)),
+        caption, caption_entities: entities,
       },
       { allow_user_chats: true, allow_bot_chats: true, allow_group_chats: true, allow_channel_chats: true },
     );
@@ -189,7 +220,7 @@ const server = http.createServer(async (req, res) => {
         const body = await readJson(req, 100_000);
         const user = verifyInitData(body.initData);
         if (!user || !getSession(body.token)) [status, out] = [401, { error: 'bad session' }];
-        else out = { names: artists(body.token, user, body.mode).map(fullName) };
+        else { const list = artists(body.token, user, body.mode); out = { names: list.map(fullName), tags: list.map((u) => mentionOf(u).text) }; }
       } catch { [status, out] = [400, { error: 'bad request' }]; }
       res.writeHead(status, { 'content-type': 'application/json' });
       return res.end(JSON.stringify(out));
@@ -241,53 +272,149 @@ function broadcast(room, msg, except) {
   for (const c of room.clients) if (c.ws !== except && c.ws.readyState === 1) c.ws.send(s);
 }
 
+// ---- what a drawing operation may contain (everything from clients is validated) ----
+const TOOLS = new Set(['pencil', 'pen', 'marker', 'brush', 'airbrush', 'chalk', 'highlighter', 'eraser']);
+const FONTS = new Set(['sans', 'serif', 'mono', 'hand']);
+const SHAPES = new Set(['line', 'rect', 'ellipse']);
+const BLENDS = new Set(['source-over', 'multiply', 'screen', 'overlay', 'darken', 'lighten']);
+const MAX_LAYERS = 8;
+const num = (v, lo, hi, d) => (Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d);
+const colour = (c) => (typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c) ? c : '#000000');
+const newLayer = (id, name = 'Layer') => ({ id, name, visible: true, opacity: 1, blend: 'source-over' });
+
+function cleanLayer(l, id) {
+  return {
+    id,
+    name: typeof l?.name === 'string' ? l.name.slice(0, 20) : 'Layer',
+    visible: l?.visible !== false,
+    opacity: num(l?.opacity, 0, 1, 1),
+    blend: BLENDS.has(l?.blend) ? l.blend : 'source-over',
+  };
+}
+
+function cleanOp(o, layers) {
+  if (!o || typeof o.id !== 'string' || o.id.length === 0 || o.id.length > 16) return null;
+  const base = { id: o.id, k: o.k, l: layers.some((L) => L.id === o.l) ? o.l : layers[0].id };
+  switch (o.k) {
+    case 'stroke':
+      if (!TOOLS.has(o.tool) || !Array.isArray(o.pts) || o.pts.length > MAX_PTS) return null;
+      return {
+        ...base, tool: o.tool, color: colour(o.color), size: num(o.size, 1, 200, 6), op: num(o.op, 0.02, 1, 1),
+        sym: num(o.sym | 0, 0, 3, 0), pts: o.pts.map((n) => num(n, -300, 3300, 0)),
+        ...(Array.isArray(o.pr) ? { pr: o.pr.slice(0, MAX_PTS / 2).map((n) => num(n, 0, 100, 50)) } : {}),
+      };
+    case 'fill':
+      return { ...base, x: num(o.x, 0, 3000, 0), y: num(o.y, 0, 3000, 0), color: colour(o.color) };
+    case 'shape':
+      if (!SHAPES.has(o.shape)) return null;
+      return {
+        ...base, shape: o.shape, x1: num(o.x1, -300, 3300, 0), y1: num(o.y1, -300, 3300, 0), x2: num(o.x2, -300, 3300, 0), y2: num(o.y2, -300, 3300, 0),
+        color: colour(o.color), size: num(o.size, 1, 200, 6), op: num(o.op, 0.02, 1, 1), f: !!o.f, sym: num(o.sym | 0, 0, 3, 0),
+      };
+    case 'text':
+      if (typeof o.text !== 'string' || !o.text.trim()) return null;
+      return { ...base, text: o.text.slice(0, 200), x: num(o.x, -300, 3300, 0), y: num(o.y, -300, 3300, 0), color: colour(o.color), size: num(o.size, 6, 400, 40), font: FONTS.has(o.font) ? o.font : 'sans', op: num(o.op, 0.02, 1, 1) };
+    case 'move':
+      return {
+        ...base, x: num(o.x, 0, 3000, 0), y: num(o.y, 0, 3000, 0), w: num(o.w, 1, 3000, 1), h: num(o.h, 1, 3000, 1),
+        tx: num(o.tx, -3000, 3000, 0), ty: num(o.ty, -3000, 3000, 0), s: num(o.s, 0.05, 20, 1), r: num(o.r, -50, 50, 0),
+      };
+    default: return null;
+  }
+}
+
 function onConnect(ws, user, token) {
   let room = rooms.get(token);
-  if (!room) rooms.set(token, (room = { ops: [], bg: '#ffffff', size: 'square', clients: new Set(), users: new Map() }));
+  if (!room) {
+    rooms.set(token, (room = {
+      ops: [], layers: [newLayer('L1', 'Layer 1')], redo: new Map(), bg: '#ffffff', size: 'square',
+      clients: new Set(), users: new Map(), version: 0, posted: -1,
+    }));
+  }
   room.users.set(user.id, user);
   const me = { ws, uid: user.id };
   room.clients.add(me);
-  ws.send(JSON.stringify({ t: 'init', ops: room.ops, bg: room.bg, size: room.size, peers: room.clients.size }));
+  ws.send(JSON.stringify({ t: 'init', ops: room.ops, layers: room.layers, bg: room.bg, size: room.size, peers: room.clients.size }));
   broadcast(room, { t: 'peers', n: room.clients.size });
+
+  const findOp = (id) => { for (let i = room.ops.length - 1; i >= 0; i--) if (room.ops[i].id === id) return room.ops[i]; return null; };
 
   ws.on('message', (raw) => {
     let m; try { m = JSON.parse(raw); } catch { return; }
     switch (m.t) {
-      case 'op': { // stroke start or fill
-        const o = m.op;
-        if (!o || typeof o.id !== 'string' || room.ops.length >= MAX_OPS) return;
-        if (o.k === 'stroke') { if (!Array.isArray(o.pts) || o.pts.length > MAX_PTS) return; }
-        else if (o.k !== 'fill') return;
+      case 'op': { // a stroke starts (points follow), or a fill / shape / text / move arrives whole
+        if (room.ops.length >= MAX_OPS) return;
+        const o = cleanOp(m.op, room.layers);
+        if (!o) return;
         o.u = me.uid;
-        room.ops.push(o);
+        room.ops.push(o); room.version++;
+        room.redo.set(me.uid, []); // a new action ends the redo history
         broadcast(room, { t: 'op', op: o }, ws);
         break;
       }
       case 'pts': {
-        for (let i = room.ops.length - 1; i >= 0; i--) {
-          const o = room.ops[i];
-          if (o.id === m.id) {
-            if (o.u !== me.uid || !Array.isArray(m.pts) || o.pts.length + m.pts.length > MAX_PTS) return;
-            o.pts.push(...m.pts);
-            broadcast(room, { t: 'pts', id: m.id, pts: m.pts }, ws);
-            return;
-          }
-        }
+        const o = findOp(m.id);
+        if (!o || o.k !== 'stroke' || o.u !== me.uid || !Array.isArray(m.pts) || o.pts.length + m.pts.length > MAX_PTS) return;
+        const pts = m.pts.map((n) => num(n, -300, 3300, 0));
+        o.pts.push(...pts);
+        let pr;
+        if (Array.isArray(m.pr) && o.pr) { pr = m.pr.slice(0, pts.length / 2).map((n) => num(n, 0, 100, 50)); o.pr.push(...pr); }
+        room.version++;
+        broadcast(room, { t: 'pts', id: m.id, pts, ...(pr ? { pr } : {}) }, ws);
         break;
       }
+      case 'end': { const o = findOp(m.id); if (o && o.u === me.uid) broadcast(room, { t: 'end', id: m.id }, ws); break; }
       case 'undo': {
         for (let i = room.ops.length - 1; i >= 0; i--) {
           if (room.ops[i].u === me.uid) {
-            const [o] = room.ops.splice(i, 1);
+            const [o] = room.ops.splice(i, 1); room.version++;
+            const stack = room.redo.get(me.uid) || [];
+            stack.push({ op: o, index: i }); if (stack.length > 50) stack.shift();
+            room.redo.set(me.uid, stack);
             broadcast(room, { t: 'remove', id: o.id });
             return;
           }
         }
         break;
       }
-      case 'clear': room.ops = []; broadcast(room, { t: 'clear' }); break;
-      case 'bg': if (m.bg === 'transparent' || /^#[0-9a-fA-F]{6}$/.test(m.bg)) { room.bg = m.bg; broadcast(room, { t: 'bg', bg: m.bg }); } break;
-      case 'size': if (SIZES.has(m.size)) { room.size = m.size; broadcast(room, { t: 'size', size: m.size }); } break;
+      case 'redo': {
+        const stack = room.redo.get(me.uid) || [];
+        const item = stack.pop();
+        if (!item || !room.layers.some((L) => L.id === item.op.l)) return;
+        const index = Math.min(item.index, room.ops.length);
+        room.ops.splice(index, 0, item.op); room.version++;
+        broadcast(room, { t: 'insert', op: item.op, index });
+        break;
+      }
+      case 'clear': room.version++; room.ops = []; room.redo = new Map(); broadcast(room, { t: 'clear' }); break;
+      case 'bg': if (m.bg === 'transparent' || /^#[0-9a-fA-F]{6}$/.test(m.bg)) { room.bg = m.bg; room.version++; broadcast(room, { t: 'bg', bg: m.bg }); } break;
+      case 'size': if (SIZES.has(m.size)) { room.size = m.size; room.version++; broadcast(room, { t: 'size', size: m.size }); } break;
+      case 'layer': {
+        const L = room.layers;
+        if (m.act === 'add') {
+          if (L.length >= MAX_LAYERS || typeof m.layer?.id !== 'string' || m.layer.id.length > 12 || L.some((x) => x.id === m.layer.id)) return;
+          const layer = cleanLayer(m.layer, m.layer.id);
+          const at = Math.min(Math.max(num(m.at, 0, L.length, L.length) | 0, 0), L.length);
+          L.splice(at, 0, layer); room.version++;
+          broadcast(room, { t: 'layer', act: 'add', layer, at }, ws);
+        } else if (m.act === 'upd') {
+          const layer = L.find((x) => x.id === m.id);
+          if (!layer) return;
+          Object.assign(layer, cleanLayer({ ...layer, ...m.props }, layer.id)); room.version++;
+          broadcast(room, { t: 'layer', act: 'upd', id: layer.id, props: layer }, ws);
+        } else if (m.act === 'order') {
+          if (!Array.isArray(m.ids) || m.ids.length !== L.length || !L.every((x) => m.ids.includes(x.id))) return;
+          room.layers = m.ids.map((id) => L.find((x) => x.id === id)); room.version++;
+          broadcast(room, { t: 'layer', act: 'order', ids: m.ids }, ws);
+        } else if (m.act === 'del') {
+          if (L.length < 2 || !L.some((x) => x.id === m.id)) return;
+          room.layers = L.filter((x) => x.id !== m.id);
+          room.ops = room.ops.filter((o) => o.l !== m.id);
+          room.redo = new Map(); room.version++;
+          broadcast(room, { t: 'sync', ops: room.ops, layers: room.layers }); // everyone, sender included
+        }
+        break;
+      }
     }
   });
 

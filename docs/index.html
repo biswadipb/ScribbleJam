@@ -57,7 +57,7 @@
   #sheet h3, #csheet h3 { margin: 0 0 4px; }
   #sheet button { text-align: left; padding: 12px; }
   #sheet .card { max-height: 92vh; overflow-y: auto; }
-  label.tag { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--hint); padding: 2px 2px 6px; }
+  #sendStatus { font-size: 14px; padding: 2px 2px 6px; color: var(--hint); }
   #csheet .sw { width: 34px; height: 34px; }
   #toast { position: fixed; left: 50%; top: 60px; transform: translateX(-50%); background: #222; color: #fff; padding: 8px 14px; border-radius: 20px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90%; text-align: center; }
   #toast.show { opacity: 1; }
@@ -74,40 +74,98 @@
   #boot svg { width: min(78vw, 420px); height: 30px; display: block; margin: 4px auto 14px; }
   #boot svg path { stroke-dasharray: 1; animation: scrawl 1.8s ease-in-out infinite; }
   @keyframes scrawl { 0% { stroke-dashoffset: 1 } 60%, 100% { stroke-dashoffset: 0 } }
-  #bootmsg { font-size: 19px; color: #4a4e69; min-height: 26px; padding: 0 20px; }
+  #boottag { font-size: clamp(22px, 6.5vw, 30px); color: #4a4e69; padding: 0 20px; }
+  #bootmsg { font-size: 15px; color: #8a8fa8; min-height: 22px; padding: 0 20px; margin-top: 18px; }
   #boot button { margin-top: 14px; background: #22223b; color: #fff; }
   .sparks i { position: absolute; font-style: normal; font-size: 30px; animation: float 3.4s ease-in-out infinite; }
   @keyframes float { 50% { transform: translateY(-12px) rotate(10deg) } }
+
+  #stage { position: relative; overflow: hidden; touch-action: none; }
+  #wrap { transform-origin: 0 0; touch-action: none; }
+  #wrap canvas { position: relative; }
+  #ov { position: absolute !important; inset: 0; pointer-events: none; }
+  .bar { overflow-x: auto; }
+  .bar button { flex: none; padding: 8px 10px; position: relative; }
+  .bar small { font-size: 10px; margin-left: 2px; color: var(--hint); }
+  .bar .primary { padding: 8px 14px; }
+  .tool { flex: none; min-width: 58px; }
+  .tool.on { outline: 2px solid var(--accent); }
+  .tool small { white-space: nowrap; }
+  .opts { gap: 8px; }
+  .opts button { flex: none; font-size: 13px; padding: 6px 10px; }
+  .opts .sm { flex: 1; display: grid; font-size: 11px; color: var(--hint); min-width: 90px; }
+  .hintline { font-size: 12px; color: var(--hint); margin-top: -4px; text-transform: none; }
+  #zoomReset { position: absolute; right: 8px; bottom: 8px; font-size: 12px; padding: 6px 10px; box-shadow: 0 1px 4px rgba(0,0,0,.25); }
+  #selbar { position: absolute; left: 50%; transform: translateX(-50%); top: 8px; display: flex; gap: 6px; background: var(--bg); padding: 6px; border-radius: 12px; box-shadow: 0 2px 8px rgba(0,0,0,.25); z-index: 5; }
+  #selbar[hidden] { display: none; }
+  #selbar button { padding: 6px 10px; }
+  #selbar button:disabled { opacity: .4; }
+  .sheet { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; align-items: flex-end; z-index: 20; }
+  .sheet.show { display: flex; }
+  .sheet .card { background: var(--bg); width: 100%; border-radius: 16px 16px 0 0; padding: 14px; display: grid; gap: 8px; padding-bottom: calc(14px + env(safe-area-inset-bottom)); max-height: 92vh; overflow-y: auto; }
+  .sheet h3, .sheet h4 { margin: 0 0 2px; }
+  .sheet h4 { font-size: 13px; color: var(--hint); font-weight: 600; }
+  #layerList { display: grid; gap: 8px; }
+  .lrow { background: var(--bg2); border-radius: 12px; padding: 8px; display: grid; gap: 6px; }
+  .lrow.act { outline: 2px solid var(--accent); }
+  .lrow .l1, .lrow .l2 { display: flex; gap: 6px; align-items: center; }
+  .lrow button { padding: 6px 9px; background: var(--bg); }
+  .lrow button:disabled { opacity: .35; }
+  .lrow .lname { flex: 1; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .lrow select { background: var(--bg); color: var(--text); border: 0; border-radius: 8px; padding: 6px; font: inherit; }
+  #svCanvas { width: 100%; height: 190px; border-radius: 12px; touch-action: none; }
+  .huebar { -webkit-appearance: none; appearance: none; height: 16px; border-radius: 8px; background: linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00); }
+  .huebar::-webkit-slider-thumb { -webkit-appearance: none; width: 22px; height: 22px; border-radius: 50%; background: #fff; border: 2px solid #333; }
+  #pkPrev { width: 40px; height: 40px; border-radius: 10px; flex: none; border: 2px solid var(--bg2); }
+  #hexIn, #textIn, #fontSel { font: inherit; color: var(--text); background: var(--bg2); border: 0; border-radius: 10px; padding: 10px; width: 100%; }
+  .sheet button.primary { text-align: center; }
+  .row.scroll, .bar { scrollbar-width: none; }
+  .row.scroll::-webkit-scrollbar, .bar::-webkit-scrollbar { display: none; }
+  .badge { white-space: nowrap; }
 </style>
 </head>
 <body>
 <div id="app">
   <div class="bar">
     <button id="undo" title="Undo">↩️</button>
-    <button id="clear" title="Clear">🗑️</button>
-    <button id="bg" title="Canvas size and colour">🖼️ Canvas</button>
+    <button id="redo" title="Redo">↪️</button>
+    <button id="clear" title="Clear everything">🗑️</button>
+    <button id="layersBtn" title="Layers">📚<small id="layerCount">1</small></button>
+    <button id="bg" title="Canvas size and colour">🖼️</button>
     <span class="sp"></span>
     <span class="badge" id="mode"></span>
     <button id="share" class="primary">Finish ✓</button>
   </div>
-  <div id="stage"><div id="wrap"><canvas id="cv" width="1024" height="1024"></canvas></div></div>
+  <div id="stage">
+    <div id="wrap"><canvas id="cv" width="1024" height="1024"></canvas><canvas id="ov" width="1024" height="1024"></canvas></div>
+    <button id="zoomReset" title="Reset zoom" hidden>⤢ Fit</button>
+    <div id="selbar" hidden>
+      <button id="selAll">Select all</button><button id="selRotL" title="Rotate left">⟲</button><button id="selRotR" title="Rotate right">⟳</button>
+      <button id="selSmall" title="Smaller">−</button><button id="selBig" title="Bigger">＋</button>
+      <button id="selOk" class="primary">✓</button><button id="selNo">✕</button>
+    </div>
+  </div>
   <div class="tools">
-    <div class="row" id="toolrow">
-      <button class="tool on" data-tool="pencil" title="Pencil">✏️<small>Pencil</small></button>
-      <button class="tool" data-tool="pen" title="Pen">🖊️<small>Pen</small></button>
-      <button class="tool" data-tool="brush" title="Brush">🖌️<small>Brush</small></button>
-      <button class="tool" data-tool="fill" title="Paint bucket">🪣<small>Bucket</small></button>
-      <button class="tool" data-tool="eraser" title="Eraser">🧽<small>Eraser</small></button>
+    <div class="row scroll" id="toolrow"></div>
+    <div class="row opts">
+      <button id="symBtn">⇋ Mirror: off</button>
+      <label class="sm"><span id="smoothLabel">Smooth off</span><input id="smooth" type="range" min="0" max="10" value="0"></label>
+      <button id="fillShape" hidden>▭ Outline</button>
     </div>
     <div class="row scroll" id="palette"></div>
-    <div class="row"><div id="dot"><i></i></div><input id="size" type="range" min="1" max="60" value="6"><span id="sizeLabel"></span></div>
+    <div class="row">
+      <div id="dot"><i></i></div>
+      <input id="size" type="range" min="1" max="60" value="6" title="Size">
+      <input id="opacity" type="range" min="2" max="100" value="100" title="Opacity">
+    </div>
+    <div id="sizeLabel" class="hintline"></div>
   </div>
 </div>
 
 <div id="sheet"><div class="card">
   <h3>Finished? 🎉</h3>
-  <label class="tag"><input type="checkbox" id="tagToggle" checked> Add a small “Drawn with ScribbleJam by …” credit</label>
-  <button data-act="print">🖼️ Send picture to this chat</button>
+  <div id="sendStatus" class="status"></div>
+  <button id="retry" data-act="retry" class="primary" hidden>Try sending again</button>
   <button data-act="forward">↗️ Send to another chat…</button>
   <button data-act="apps">📤 Share to other apps…</button>
   <button data-act="save">💾 Save image</button>
@@ -130,11 +188,33 @@
   <div class="row scroll" id="cpalette"></div>
   <button data-act="done" class="primary">Done</button>
 </div></div>
+<div id="lsheet" class="sheet"><div class="card">
+  <h3>Layers 📚</h3>
+  <div id="layerList"></div>
+  <button id="addLayer">＋ Add layer</button>
+  <button data-act="done" class="primary">Done</button>
+</div></div>
+<div id="psheet" class="sheet"><div class="card">
+  <h3>Pick a colour 🎨</h3>
+  <canvas id="svCanvas" width="320" height="200"></canvas>
+  <input id="hue" type="range" min="0" max="360" value="0" class="huebar">
+  <div class="row"><div id="pkPrev"></div><input id="hexIn" value="#000000" maxlength="7" spellcheck="false"></div>
+  <h4>Recent</h4>
+  <div class="row scroll" id="recents"></div>
+  <button data-act="done" class="primary">Done</button>
+</div></div>
+<div id="tsheet" class="sheet"><div class="card">
+  <h3>Add text Aa</h3>
+  <textarea id="textIn" rows="3" maxlength="200" placeholder="Type here…"></textarea>
+  <select id="fontSel"><option value="sans">Clean</option><option value="serif">Serif</option><option value="hand">Handwritten</option><option value="mono">Typewriter</option></select>
+  <div class="row"><button data-act="tcancel">Cancel</button><button data-act="tadd" class="primary" style="flex:1">Add to drawing</button></div>
+</div></div>
 <div id="boot"><div>
-  <div class="sparks"><i style="left:12%;top:16%">⭐</i><i style="right:14%;top:22%;animation-delay:.6s">✏️</i><i style="left:16%;bottom:18%;animation-delay:1.1s">🎨</i><i style="right:12%;bottom:14%;animation-delay:1.7s">🖍️</i></div>
+  <div class="sparks"><i style="left:12%;top:16%">⭐</i><i style="right:14%;top:22%;animation-delay:.6s">🖌️</i><i style="left:16%;bottom:18%;animation-delay:1.1s">🎨</i><i style="right:12%;bottom:14%;animation-delay:1.7s">🖍️</i></div>
   <h1 id="bootTitle"></h1>
   <svg viewBox="0 0 420 30"><path pathLength="1" d="M8 18 q100 -16 205 0 t200 -4" fill="none" stroke="#e63946" stroke-width="7" stroke-linecap="round"/></svg>
-  <div id="bootmsg">Sharpening pencils…</div>
+  <div id="boottag">draw with your friends ✏️</div>
+  <div id="bootmsg">Loading…</div>
   <button id="bootRetry" hidden>Try again</button>
 </div></div>
 <div id="toast"></div>
