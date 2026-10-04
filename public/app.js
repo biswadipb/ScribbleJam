@@ -21,21 +21,27 @@ const ops = [];
 let bg = 'white';
 let tool = 'pencil';
 let color = '#000000';
-let size = 6;
+const sizes = { pencil: 6, pen: 8, brush: 16, eraser: 24 }; // each tool remembers its own size
+let size = sizes.pencil;
 let ws = null;
 
 const COLORS = ['#000000', '#ffffff', '#e53935', '#fb8c00', '#fdd835', '#43a047', '#00acc1', '#1e88e5', '#5e35b1', '#d81b60', '#8d6e63', '#9e9e9e'];
 
 // ---------- rendering ----------
+function widthOf(t, sz) {
+  if (t === 'pencil') return Math.max(1, sz * 0.5);
+  if (t === 'brush') return sz * 1.8;
+  return sz; // pen, eraser
+}
+
 function style(op) {
   ctx.lineCap = ctx.lineJoin = 'round';
   ctx.strokeStyle = ctx.shadowColor = op.color;
   ctx.shadowBlur = 0;
   ctx.globalCompositeOperation = 'source-over';
-  let w = op.size;
-  if (op.tool === 'pencil') w = Math.max(1, op.size * 0.4);
-  if (op.tool === 'brush') { w = op.size * 2; ctx.shadowBlur = op.size * 0.8; }
-  if (op.tool === 'eraser') { w = op.size * 2.5; ctx.globalCompositeOperation = 'destination-out'; }
+  const w = widthOf(op.tool, op.size);
+  if (op.tool === 'brush') ctx.shadowBlur = w * 0.4;
+  if (op.tool === 'eraser') ctx.globalCompositeOperation = 'destination-out';
   ctx.lineWidth = w;
 }
 
@@ -178,7 +184,9 @@ fit();
 // ---------- toolbar ----------
 document.querySelectorAll('.tool').forEach((b) => b.addEventListener('click', () => {
   tool = b.dataset.tool;
+  if (sizes[tool]) size = sizes[tool];
   document.querySelectorAll('.tool').forEach((x) => x.classList.toggle('on', x === b));
+  showSize();
 }));
 
 const pal = $('#palette');
@@ -197,13 +205,25 @@ pal.appendChild(custom);
 function setColor(c) {
   color = c;
   document.querySelectorAll('.sw').forEach((b) => b.classList.toggle('sel', b.dataset.c === c));
-  $('#dot i').style.background = c;
+  if (typeof showSize === 'function' && sizeEl) showSize();
 }
-setColor(color);
 
 const sizeEl = $('#size');
-function setSize() { size = +sizeEl.value; const d = Math.max(3, Math.min(32, size)); $('#dot i').style.width = $('#dot i').style.height = d + 'px'; }
-sizeEl.addEventListener('input', setSize); setSize();
+function showSize() {
+  const fill = tool === 'fill';
+  sizeEl.disabled = fill;
+  sizeEl.value = size;
+  $('#sizeLabel').textContent = fill ? 'Bucket has no size' : `${tool} size ${size}`;
+  // preview dot = real on-screen thickness of the stroke
+  const px = fill ? 6 : widthOf(tool, size) * (wrap.clientWidth / S);
+  const d = Math.max(2, Math.min(34, px));
+  $('#dot i').style.width = $('#dot i').style.height = d + 'px';
+  $('#dot i').style.background = tool === 'eraser' ? 'transparent' : color;
+  $('#dot i').style.border = tool === 'eraser' ? '2px dashed var(--hint)' : '0';
+}
+sizeEl.addEventListener('input', () => { size = sizes[tool] = +sizeEl.value; showSize(); });
+showSize();
+setColor(color);
 
 $('#undo').addEventListener('click', () => {
   if (mode === 'together') return send({ t: 'undo' });
@@ -236,7 +256,7 @@ async function api(action, png, extra = {}) {
   const r = await fetch('/api/export', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ initData, token, action, png, ...extra }),
+    body: JSON.stringify({ initData, token, mode, action, png, ...extra }),
   });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || 'Something went wrong');

@@ -35,7 +35,9 @@
   .tools { background: var(--bg); padding: 8px 10px 10px; display: grid; gap: 8px; }
   .row { display: flex; gap: 6px; align-items: center; }
   .row.scroll { overflow-x: auto; }
-  .tool { flex: 1; font-size: 20px; padding: 6px 0; }
+  .tool { flex: 1; font-size: 20px; padding: 6px 0; display: grid; justify-items: center; line-height: 1.2; }
+  .tool small { font-size: 10px; color: var(--hint); }
+  #sizeLabel { font-size: 12px; color: var(--hint); min-width: 92px; text-transform: capitalize; }
   .sw { width: 28px; height: 28px; flex: none; border-radius: 50%; border: 2px solid var(--bg2); padding: 0; }
   .sw.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
   .custom { position: relative; overflow: hidden; background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red); }
@@ -65,14 +67,14 @@
   <div id="stage"><div id="wrap"><canvas id="cv" width="1024" height="1024"></canvas></div></div>
   <div class="tools">
     <div class="row" id="toolrow">
-      <button class="tool on" data-tool="pencil" title="Pencil">✏️</button>
-      <button class="tool" data-tool="pen" title="Pen">🖊️</button>
-      <button class="tool" data-tool="brush" title="Brush">🖌️</button>
-      <button class="tool" data-tool="fill" title="Paint bucket">🪣</button>
-      <button class="tool" data-tool="eraser" title="Eraser">🧽</button>
+      <button class="tool on" data-tool="pencil" title="Pencil">✏️<small>Pencil</small></button>
+      <button class="tool" data-tool="pen" title="Pen">🖊️<small>Pen</small></button>
+      <button class="tool" data-tool="brush" title="Brush">🖌️<small>Brush</small></button>
+      <button class="tool" data-tool="fill" title="Paint bucket">🪣<small>Bucket</small></button>
+      <button class="tool" data-tool="eraser" title="Eraser">🧽<small>Eraser</small></button>
     </div>
     <div class="row scroll" id="palette"></div>
-    <div class="row"><div id="dot"><i></i></div><input id="size" type="range" min="1" max="40" value="6"></div>
+    <div class="row"><div id="dot"><i></i></div><input id="size" type="range" min="1" max="60" value="6"><span id="sizeLabel"></span></div>
   </div>
 </div>
 

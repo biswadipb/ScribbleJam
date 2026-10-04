@@ -64,6 +64,23 @@ if (bot) {
   });
 }
 
+// ---------- Captions ----------
+// "@username" if they have one (Telegram turns it into a mention), otherwise their name.
+const label = (u) => (u.username ? `@${u.username}` : [u.first_name, u.last_name].filter(Boolean).join(' ') || 'Someone');
+
+// Everyone who drew in a shared room; otherwise just the person who finished it.
+function artists(token, finisher, mode) {
+  const room = mode === 'together' ? rooms.get(token) : null;
+  const list = room ? [...new Set(room.ops.map((o) => o.u))].map((id) => room.users.get(id)).filter(Boolean) : [];
+  return list.length ? list : [finisher];
+}
+
+function doodleCaption(users) {
+  const names = users.map(label);
+  const who = names.length < 2 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
+  return `Doodle by ${who}`;
+}
+
 // ---------- Export (print / story / sticker) ----------
 async function handleExport(body) {
   const user = verifyInitData(body.initData);
@@ -79,10 +96,11 @@ async function handleExport(body) {
 
   if (body.action === 'print') {
     const file = new InputFile(buf, 'drawing.png');
+    const caption = doodleCaption(artists(body.token, user, body.mode));
     if (body.bg === 'transparent') {
-      await bot.api.sendDocument(session.chatId, file, { caption: `🎨 by ${name} (transparent PNG)` });
+      await bot.api.sendDocument(session.chatId, file, { caption });
     } else {
-      await bot.api.sendPhoto(session.chatId, file, { caption: `🎨 by ${name}` });
+      await bot.api.sendPhoto(session.chatId, file, { caption });
     }
     return [200, { ok: true }];
   }
@@ -174,7 +192,8 @@ function broadcast(room, msg, except) {
 
 function onConnect(ws, user, token) {
   let room = rooms.get(token);
-  if (!room) rooms.set(token, (room = { ops: [], bg: 'white', clients: new Set() }));
+  if (!room) rooms.set(token, (room = { ops: [], bg: 'white', clients: new Set(), users: new Map() }));
+  room.users.set(user.id, user);
   const me = { ws, uid: user.id };
   room.clients.add(me);
   ws.send(JSON.stringify({ t: 'init', ops: room.ops, bg: room.bg, peers: room.clients.size }));
