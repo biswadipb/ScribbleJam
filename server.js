@@ -265,6 +265,12 @@ async function handleExport(body) {
   return [400, { error: 'unknown action' }];
 }
 
+// ---------- never let one bad request kill the server ----------
+// (Render reported "Exited with status 1": an odd web address, a malformed websocket message or an
+// oversized one used to throw outside any handler and end the process, wiping every drawing in memory.)
+process.on('uncaughtException', (e) => console.error('uncaught exception (kept running):', e?.message || e));
+process.on('unhandledRejection', (e) => console.error('unhandled rejection (kept running):', e?.message || e));
+
 // ---------- HTTP ----------
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml' };
 const webhookSecret = BOT_TOKEN ? crypto.createHash('sha256').update(BOT_TOKEN).digest('hex').slice(0, 32) : '';
@@ -280,7 +286,8 @@ function readJson(req, limit = 10_000_000) {
 }
 
 const server = http.createServer(async (req, res) => {
-  const url = new URL(req.url, 'http://x');
+  let url;
+  try { url = new URL(req.url, 'http://x'); } catch { res.writeHead(400); return res.end('bad request'); }
   // The Mini App page may be served from a static host (GitHub Pages) that calls this server.
   // Requests are authenticated by Telegram initData, not cookies, so open CORS is fine.
   res.setHeader('access-control-allow-origin', '*');
@@ -288,7 +295,7 @@ const server = http.createServer(async (req, res) => {
   res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
-    if (req.method === 'POST' && tgHandler && url.pathname === `/tg/${webhookSecret}`) return tgHandler(req, res);
+    if (req.method === 'POST' && tgHandler && url.pathname === `/tg/${webhookSecret}`) return await tgHandler(req, res); // await: a failure must land in the catch below
 
     if (req.method === 'POST' && url.pathname === '/api/artists') {
       let status = 200, out;
@@ -331,16 +338,21 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' });
     fs.createReadStream(file).pipe(res);
   } catch (e) {
-    console.error(e);
-    res.writeHead(500); res.end();
+    console.error('request failed:', e?.message || e);
+    if (!res.headersSent) { try { res.writeHead(500); } catch {} }
+    try { res.end(); } catch {}
   }
 });
+server.on('clientError', (err, socket) => { try { socket.destroy(); } catch {} });
 
 // ---------- Live drawing rooms ----------
-const wss = new WebSocketServer({ noServer: true, maxPayload: 1_000_000 });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 8_000_000 }); // room for a restored drawing
+wss.on('error', (e) => console.error('websocket server error:', e?.message || e));
 
 server.on('upgrade', (req, socket, head) => {
-  const url = new URL(req.url, 'http://x');
+  let url;
+  try { url = new URL(req.url, 'http://x'); } catch { return socket.destroy(); }
+  socket.on('error', () => {});
   if (url.pathname !== '/ws') return socket.destroy();
   const user = verifyInitData(url.searchParams.get('initData'));
   const token = url.searchParams.get('token');
@@ -442,8 +454,14 @@ function onConnect(ws, user, token) {
 
   const findOp = (id) => { for (let i = room.ops.length - 1; i >= 0; i--) if (room.ops[i].id === id) return room.ops[i]; return null; };
 
+  ws.on('error', (e) => console.warn('websocket client error:', e?.message || e)); // e.g. a frame that is too big
   ws.on('message', (raw) => {
     let m; try { m = JSON.parse(raw); } catch { return; }
+    if (!m || typeof m !== 'object') return;
+    try { handleMessage(m); } catch (e) { console.error('could not handle a message:', e?.message || e); }
+  });
+
+  function handleMessage(m) {
     switch (m.t) {
       case 'op': { // a stroke starts (points follow), or a fill / shape / text / move arrives whole
         if (room.ops.length >= MAX_OPS) { ws.send(JSON.stringify({ t: 'full', id: m.op?.id })); return; }
@@ -539,7 +557,7 @@ function onConnect(ws, user, token) {
         break;
       }
     }
-  });
+  }
 
   ws.on('close', () => {
     room.lastSeen = Date.now();
