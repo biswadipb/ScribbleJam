@@ -18,3 +18,14 @@ For real Telegram testing locally, run a tunnel (`cloudflared tunnel --url http:
 - Stickers: each user gets one pack `d<userid>_by_<bot>`; Telegram caps packs at 120 stickers.
 - Finished doodles are captioned `Doodle by @username` (or the person's name if they have no username). In a shared room, everyone who drew is listed.
 - Each tool (pencil, pen, brush, eraser) has its own adjustable size; the bucket has none.
+
+## Skipping Render's "service waking up" screen
+The Mini App page lives in `docs/`. If it is served by the Render service itself, Telegram users see Render's own
+wake-up screen whenever the free service has been idle. To show the ScribbleJam loading screen instead, host `docs/`
+on GitHub Pages (always on, free) and let it wake the server:
+1. In `docs/config.js` set `window.SJ_API = 'https://<your-service>.onrender.com'`.
+2. Repo **Settings → Pages**: source `main`, folder `/docs`. You get `https://<user>.github.io/ScribbleJam/`.
+3. @BotFather → `/myapps` → ScribbleJam → **Edit Web App URL** → the Pages URL.
+4. Keep `PUBLIC_URL` on Render as the Render address (the webhook and story images still use it).
+
+Draw-alone opens instantly (the server wakes in the background); draw-together shows the splash until it is awake.

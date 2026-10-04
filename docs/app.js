@@ -3,6 +3,7 @@ tg?.ready();
 tg?.expand();
 
 const $ = (s) => document.querySelector(s);
+const API = (window.SJ_API || '').replace(/\/$/, ''); // '' = same server as this page
 const S = 1024; // logical canvas size
 const cv = $('#cv');
 const ctx = cv.getContext('2d', { willReadFrequently: true });
@@ -110,8 +111,9 @@ function renderAll() {
 function send(m) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m)); }
 
 function connect() {
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/ws?token=${token}&initData=${encodeURIComponent(initData)}`);
+  const base = new URL(API || location.origin);
+  const proto = base.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${base.host}/ws?token=${token}&initData=${encodeURIComponent(initData)}`);
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.t === 'init') { ops.length = 0; ops.push(...m.ops); setBg(m.bg, false); renderAll(); peers(m.peers); }
@@ -253,7 +255,8 @@ function exportPng(size, withBg) {
 }
 
 async function api(action, png, extra = {}) {
-  const r = await fetch('/api/export', {
+  if (!serverUp) { toast('Waking the server up… one moment'); await ready; }
+  const r = await fetch(`${API}/api/export`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ initData, token, mode, action, png, ...extra }),
@@ -293,4 +296,38 @@ function toast(msg) {
   clearTimeout(tt); tt = setTimeout(() => t.classList.remove('show'), 2600);
 }
 
-if (mode === 'together') connect();
+// ---------- waking the server ----------
+// Free hosting naps when idle. Ping it so it wakes while the doodler is already drawing;
+// shared rooms wait behind a ScribbleJam splash because they need the live connection.
+let serverUp = false;
+const boot = $('#boot');
+$('#bootTitle').innerHTML = [...'ScribbleJam'].map((c, i) => `<span style="animation-delay:${i * 0.08}s">${c}</span>`).join('');
+const MSGS = ['Sharpening pencils…', 'Mixing the colours…', 'Warming up the canvas…', 'Waking the server up (it naps when quiet)…', 'Almost there…'];
+
+async function ping() {
+  for (let i = 0; i < 60; i++) {
+    try {
+      const c = new AbortController(); const t = setTimeout(() => c.abort(), 5000);
+      const r = await fetch(`${API}/healthz`, { signal: c.signal, cache: 'no-store' });
+      clearTimeout(t);
+      if (r.ok) return true;
+    } catch {}
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+  return false;
+}
+let ready = ping().then((ok) => (serverUp = ok));
+
+async function start() {
+  if (mode !== 'together') return;
+  boot.classList.add('show'); $('#bootRetry').hidden = true;
+  let n = 0;
+  const msgTimer = setInterval(() => { $('#bootmsg').textContent = MSGS[Math.min(++n, MSGS.length - 1)]; }, 2600);
+  const ok = await ready;
+  clearInterval(msgTimer);
+  if (!ok) { $('#bootmsg').textContent = 'The server is taking a long nap 😴'; $('#bootRetry').hidden = false; return; }
+  connect();
+  boot.classList.add('out'); setTimeout(() => boot.classList.remove('show', 'out'), 400);
+}
+$('#bootRetry').addEventListener('click', () => { ready = ping().then((ok) => (serverUp = ok)); start(); });
+start();

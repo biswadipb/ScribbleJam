@@ -12,7 +12,7 @@ if (!BOT_TOKEN && !DEV) {
   process.exit(1);
 }
 
-const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'public');
+const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'docs');
 const MAX_OPS = 3000;
 const MAX_PTS = 20000; // numbers per stroke
 
@@ -149,6 +149,12 @@ function readJson(req, limit = 10_000_000) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
+  // The Mini App page may be served from a static host (GitHub Pages) that calls this server.
+  // Requests are authenticated by Telegram initData, not cookies, so open CORS is fine.
+  res.setHeader('access-control-allow-origin', '*');
+  res.setHeader('access-control-allow-headers', 'content-type');
+  res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
+  if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   try {
     if (req.method === 'POST' && tgHandler && url.pathname === `/tg/${webhookSecret}`) return tgHandler(req, res);
 
