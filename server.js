@@ -16,8 +16,18 @@ const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'publ
 const MAX_OPS = 3000;
 const MAX_PTS = 20000; // numbers per stroke
 
-// token -> { chatId, title }   (one per /draw command; lost on restart)
-const sessions = new Map();
+// Session tokens are signed and self-contained ("<chat>x<nonce>x<sig>"), so they keep working
+// after Render restarts the service. Only the live canvas (rooms) is held in memory.
+const sign = (s) => crypto.createHmac('sha256', BOT_TOKEN || 'dev').update(s).digest('base64url').slice(0, 10);
+function makeToken(chatId) {
+  const body = `${String(chatId).replace('-', 'n')}x${rand(4)}`;
+  return `${body}x${sign(body)}`;
+}
+function getSession(token) {
+  const m = /^((n?\d+)x[0-9a-f]{8})x([A-Za-z0-9_-]{10})$/.exec(token || '');
+  if (!m || sign(m[1]) !== m[3]) return DEV && token ? { chatId: 0 } : null;
+  return { chatId: Number(m[2].replace('n', '-')) };
+}
 // token -> { ops, bg, clients:Set }
 const rooms = new Map();
 // id -> { buf, exp }  short-lived PNGs for story sharing
@@ -50,8 +60,7 @@ const bot = BOT_TOKEN ? new Bot(BOT_TOKEN) : null;
 
 if (bot) {
   bot.command(['draw', 'start'], async (ctx) => {
-    const token = rand(6);
-    sessions.set(token, { chatId: ctx.chat.id, title: ctx.chat.title });
+    const token = makeToken(ctx.chat.id);
     const link = (m) => `https://t.me/${bot.botInfo.username}/${MINIAPP_SHORT}?startapp=${m}_${token}`;
     await ctx.reply('🎨 How do you want to draw?', {
       reply_markup: {
@@ -85,7 +94,7 @@ function doodleCaption(users) {
 async function handleExport(body) {
   const user = verifyInitData(body.initData);
   if (!user) return [401, { error: 'bad initData' }];
-  const session = sessions.get(body.token);
+  const session = getSession(body.token);
   if (!session) return [410, { error: 'This drawing session expired. Send /draw again.' }];
   const m = /^data:image\/png;base64,(.+)$/.exec(body.png || '');
   if (!m) return [400, { error: 'png required' }];
@@ -180,8 +189,7 @@ server.on('upgrade', (req, socket, head) => {
   if (url.pathname !== '/ws') return socket.destroy();
   const user = verifyInitData(url.searchParams.get('initData'));
   const token = url.searchParams.get('token');
-  if (DEV && token && !sessions.has(token)) sessions.set(token, { chatId: 0 });
-  if (!user || !sessions.has(token)) return socket.destroy();
+  if (!user || !getSession(token)) return socket.destroy();
   wss.handleUpgrade(req, socket, head, (ws) => onConnect(ws, user, token));
 });
 
