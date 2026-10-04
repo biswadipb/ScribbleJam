@@ -6,7 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { Bot, InputFile, webhookCallback } from 'grammy';
 import { WebSocketServer } from 'ws';
 
-const { BOT_TOKEN, MINIAPP_SHORT, PORT = 3000, DEV } = process.env;
+const { BOT_TOKEN, PORT = 3000, DEV } = process.env;
+// short name of the Mini App in @BotFather (/newapp); group buttons open t.me/<bot>/<this name>
+const MINIAPP_SHORT = (process.env.MINIAPP_SHORT || 'draw').trim();
 const PUBLIC_URL = (process.env.PUBLIC_URL || '').trim().replace(/\/+$/, ''); // no trailing slash, whatever was typed
 if (!BOT_TOKEN && !DEV) {
   console.error('BOT_TOKEN is required (or set DEV=1 to run without Telegram)');
@@ -65,7 +67,7 @@ function verifyInitData(initData) {
 // ---------- Bot ----------
 const bot = BOT_TOKEN ? new Bot(BOT_TOKEN) : null;
 // What /status reports: only yes/no facts and counters, nothing secret.
-const status = { botStarted: false, webhookSet: false, menuButtonSet: false, publicUrlSet: !!PUBLIC_URL, miniAppShortSet: !!MINIAPP_SHORT, updatesReceived: 0, lastUpdateAt: 0, lastError: null };
+const status = { botStarted: false, webhookSet: false, menuButtonSet: false, publicUrlSet: !!PUBLIC_URL, miniAppShortSet: !!process.env.MINIAPP_SHORT, miniAppShort: MINIAPP_SHORT, updatesReceived: 0, lastUpdateAt: 0, lastError: null };
 // In DEV (no token) sends are just logged, so the Finish flow can be tested without Telegram.
 const tgApi = bot ? bot.api : DEV ? {
   sendPhoto: async (chat, _f, o) => console.log('DEV sendPhoto', JSON.stringify(o.caption)),
@@ -561,7 +563,7 @@ server.listen(PORT, async () => {
     await bot.init();
     status.botStarted = true;
     console.log(`bot @${bot.botInfo.username}`);
-    if (!MINIAPP_SHORT) console.warn('MINIAPP_SHORT is not set - create the Mini App in @BotFather (/newapp) and set it');
+    if (!process.env.MINIAPP_SHORT) console.warn(`MINIAPP_SHORT is not set - using "${MINIAPP_SHORT}". Set it to the short name from @BotFather (/myapps) or the group buttons will say "Bot application not found"`);
     if (!PUBLIC_URL) { console.warn('PUBLIC_URL is not set - webhook NOT registered, so Telegram will never reach this bot'); return; }
     await bot.api.setWebhook(`${PUBLIC_URL}/tg/${webhookSecret}`);
     status.webhookSet = true;
