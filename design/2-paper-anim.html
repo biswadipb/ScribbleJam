@@ -1,0 +1,30 @@
+<!doctype html><meta charset=utf-8>
+<style>
+html,body{margin:0;background:#fffdf6}svg{display:block}
+.d{stroke-dasharray:1;stroke-dashoffset:1;animation:draw var(--dur,.5s) ease-out var(--del,0s) forwards}
+@keyframes draw{to{stroke-dashoffset:0}}
+.title{transform-box:fill-box;transform-origin:center;opacity:0;animation:pop .55s cubic-bezier(.3,1.6,.5,1) .55s forwards}
+@keyframes pop{0%{opacity:0;transform:scale(.6) rotate(-4deg)}100%{opacity:1;transform:none}}
+.tag{opacity:0;animation:fade .5s ease-out 1.9s forwards}
+@keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.wob{transform-box:fill-box;transform-origin:center;animation:wob 1.6s ease-in-out 2.4s infinite alternate}
+@keyframes wob{to{transform:rotate(14deg) translateY(-3px)}}
+</style>
+<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360">
+<defs><pattern id="p" width="24" height="24" patternUnits="userSpaceOnUse"><path d="M24 0H0V24" fill="none" stroke="#cfe3ee" stroke-width="1"/></pattern></defs>
+<rect width="640" height="360" fill="#fffdf6"/><rect width="640" height="360" fill="url(#p)"/>
+<g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="5">
+<path class="d" pathLength="1" style="--del:.05s" d="M72 50 l7 16 l17 2 l-13 11 l4 17 l-15 -9 l-15 9 l4 -17 l-13 -11 l17 -2z" stroke="#f4a100" stroke-width="4"/>
+<path class="d" pathLength="1" style="--del:.2s" d="M540 70 q20 -40 40 0 q-20 10 -40 0" stroke="#e63946"/>
+<path class="d" pathLength="1" style="--del:.35s;--dur:.7s" d="M70 290 q30 -50 60 0 t60 0" stroke="#2a9d8f"/>
+<path class="d" pathLength="1" style="--del:.5s;--dur:.6s" d="M500 300 c 20 -30 50 -30 70 0" stroke="#457b9d"/>
+<circle class="d" pathLength="1" style="--del:.3s" cx="585" cy="215" r="14" stroke="#8338ec"/>
+<path class="d" pathLength="1" style="--del:.1s;--dur:.3s" d="M40 190 l16 16 m0 -16 l-16 16" stroke="#e63946"/></g>
+<text class="title" x="320" y="190" text-anchor="middle" font-family="Marker Felt, Chalkboard SE, Comic Sans MS, sans-serif" font-size="84" font-weight="700" fill="#22223b">ScribbleJam</text>
+<path class="d" pathLength="1" style="--del:1.3s;--dur:.6s" d="M110 212 q100 22 210 4 t210 -2" fill="none" stroke="#e63946" stroke-width="7" stroke-linecap="round"/>
+<text class="tag" x="320" y="272" text-anchor="middle" font-family="Marker Felt, Chalkboard SE, Comic Sans MS, sans-serif" font-size="30" fill="#4a4e69">doodle with your friends <tspan class="wob">✏️</tspan></text>
+</svg>
+<script>
+const t=+location.hash.slice(1)||0;
+document.getAnimations().forEach(a=>{a.pause();a.currentTime=t});
+</script>
