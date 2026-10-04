@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>ScribbleJam</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --bg: var(--tg-theme-bg-color, #ffffff);
+    --bg2: var(--tg-theme-secondary-bg-color, #f1f1f4);
+    --text: var(--tg-theme-text-color, #111);
+    --hint: var(--tg-theme-hint-color, #777);
+    --accent: var(--tg-theme-button-color, #2f80ed);
+    --accent-text: var(--tg-theme-button-text-color, #fff);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; height: 100%; background: var(--bg2); color: var(--text); font: 15px system-ui, sans-serif; overscroll-behavior: none; }
+  #app { display: flex; flex-direction: column; height: 100%; padding-bottom: env(safe-area-inset-bottom); }
+  .bar { display: flex; align-items: center; gap: 6px; padding: 8px 10px; background: var(--bg); }
+  .bar .sp { flex: 1; }
+  .badge { font-size: 12px; color: var(--hint); }
+  button { font: inherit; color: var(--text); background: var(--bg2); border: 0; border-radius: 10px; padding: 8px 12px; cursor: pointer; }
+  button.primary { background: var(--accent); color: var(--accent-text); }
+  button.on { outline: 2px solid var(--accent); }
+  #stage { flex: 1; min-height: 0; display: grid; place-items: center; padding: 8px; }
+  #wrap { position: relative; touch-action: none; box-shadow: 0 1px 8px rgba(0,0,0,.18); background: #fff; }
+  #wrap.transparent {
+    background-color: #fff;
+    background-image: linear-gradient(45deg,#ddd 25%,transparent 25%,transparent 75%,#ddd 75%),
+                      linear-gradient(45deg,#ddd 25%,transparent 25%,transparent 75%,#ddd 75%);
+    background-size: 20px 20px; background-position: 0 0, 10px 10px;
+  }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  .tools { background: var(--bg); padding: 8px 10px 10px; display: grid; gap: 8px; }
+  .row { display: flex; gap: 6px; align-items: center; }
+  .row.scroll { overflow-x: auto; }
+  .tool { flex: 1; font-size: 20px; padding: 6px 0; }
+  .sw { width: 28px; height: 28px; flex: none; border-radius: 50%; border: 2px solid var(--bg2); padding: 0; }
+  .sw.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .custom { position: relative; overflow: hidden; background: conic-gradient(red, yellow, lime, cyan, blue, magenta, red); }
+  .custom input { position: absolute; inset: -10px; opacity: 0; width: 60px; height: 60px; cursor: pointer; }
+  input[type=range] { flex: 1; accent-color: var(--accent); }
+  #dot { width: 34px; height: 34px; display: grid; place-items: center; flex: none; }
+  #dot i { display: block; border-radius: 50%; background: var(--text); }
+  #sheet { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; align-items: flex-end; }
+  #sheet.show { display: flex; }
+  #sheet .card { background: var(--bg); width: 100%; border-radius: 16px 16px 0 0; padding: 14px; display: grid; gap: 8px; padding-bottom: calc(14px + env(safe-area-inset-bottom)); }
+  #sheet h3 { margin: 0 0 4px; }
+  #sheet button { text-align: left; padding: 12px; }
+  #toast { position: fixed; left: 50%; top: 60px; transform: translateX(-50%); background: #222; color: #fff; padding: 8px 14px; border-radius: 20px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90%; text-align: center; }
+  #toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="bar">
+    <button id="undo" title="Undo">↩️</button>
+    <button id="clear" title="Clear">🗑️</button>
+    <button id="bg" title="Background">⬜ White</button>
+    <span class="sp"></span>
+    <span class="badge" id="mode"></span>
+    <button id="share" class="primary">Finish ✓</button>
+  </div>
+  <div id="stage"><div id="wrap"><canvas id="cv" width="1024" height="1024"></canvas></div></div>
+  <div class="tools">
+    <div class="row" id="toolrow">
+      <button class="tool on" data-tool="pencil" title="Pencil">✏️</button>
+      <button class="tool" data-tool="pen" title="Pen">🖊️</button>
+      <button class="tool" data-tool="brush" title="Brush">🖌️</button>
+      <button class="tool" data-tool="fill" title="Paint bucket">🪣</button>
+      <button class="tool" data-tool="eraser" title="Eraser">🧽</button>
+    </div>
+    <div class="row scroll" id="palette"></div>
+    <div class="row"><div id="dot"><i></i></div><input id="size" type="range" min="1" max="40" value="6"></div>
+  </div>
+</div>
+
+<div id="sheet"><div class="card">
+  <h3>Finished? 🎉</h3>
+  <button data-act="print">🖼️ Send picture to the chat</button>
+  <button data-act="story">📱 Post to my story</button>
+  <button data-act="sticker-white">🏷️ Make a sticker (white background)</button>
+  <button data-act="sticker-clear">🏷️ Make a sticker (no background)</button>
+  <button data-act="close">Keep drawing</button>
+</div></div>
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
