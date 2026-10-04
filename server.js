@@ -75,9 +75,16 @@ const WEBAPP_URL = (process.env.WEBAPP_URL || PUBLIC_URL || '').replace(/\/?$/, 
 
 async function sendDrawPrompt(ctx) {
   if (ctx.chat.type === 'private') {
-    await ctx.reply('🎨 Tap to start drawing. When you finish, the picture comes back to this chat.', {
-      reply_markup: { inline_keyboard: [[{ text: '🎨 Start drawing', web_app: { url: `${WEBAPP_URL}?p=s_me` } }]] },
-    });
+    const text = '🎨 Tap to start drawing. When you finish, the picture comes back to this chat.';
+    // the link button works in every chat and opens the same one-person canvas ("me" = your own DM)
+    const linkButton = { text: '🎨 Start drawing', url: `https://t.me/${bot.botInfo.username}/${MINIAPP_SHORT}?startapp=s_me` };
+    const webAppButton = /^https:\/\//.test(WEBAPP_URL) ? { text: '🎨 Start drawing', web_app: { url: `${WEBAPP_URL}?p=s_me` } } : null;
+    try {
+      await ctx.reply(text, { reply_markup: { inline_keyboard: [[webAppButton || linkButton]] } });
+    } catch (e) { // Telegram refused the button: say so in the log and still answer with the plain link
+      console.error('DM prompt failed with the web_app button:', e.description || e.message, '| url:', WEBAPP_URL);
+      await ctx.reply(text, { reply_markup: { inline_keyboard: [[linkButton]] } });
+    }
     return;
   }
   // groups: choose between drawing alone or together
@@ -94,6 +101,7 @@ async function sendDrawPrompt(ctx) {
 }
 
 if (bot) {
+  bot.catch((err) => console.error('bot error while handling an update:', err.error?.description || err.error?.message || err.message));
   bot.command(['draw', 'start'], sendDrawPrompt);
   // in a DM, any message gets the drawing button (people don't always know to type /draw)
   bot.on('message', (ctx) => (ctx.chat.type === 'private' ? sendDrawPrompt(ctx) : undefined));
