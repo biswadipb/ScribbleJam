@@ -44,3 +44,15 @@ The app uses its own dialogs instead of the browser's `confirm()` / `prompt()` b
 
 ## Private chats (DMs)
 Writing to the bot in a DM (or pressing its **🎨 Draw** menu button) goes straight to a one-person canvas: no alone/together choice. The finished picture is sent back to that DM. This uses a `web_app` button, so it needs no BotFather setup. The page is served from `WEBAPP_URL` (defaults to the GitHub Pages site; set the env var on Render to use another host).
+
+## Saving your progress
+- **Alone:** the drawing is saved on your phone a moment after every change and comes back when you reopen the same canvas (7 days after the last change, or until you clear it). The DM canvas is one persistent canvas per person.
+- **Shared:** the server keeps the drawing while it is awake. If it forgot it (free Render sleeps when idle), the first person to come back sends their saved copy and the room is rebuilt for everyone. User records are signed by the server, so a restored drawing cannot be used to invent names in the credits.
+- Rooms that nobody has entered for 24 hours are dropped from server memory.
+
+## Limits
+- A shared room holds **12 people** at once (`MAX_PEOPLE` env var) and **3000 operations** (strokes, fills, shapes, text, moves). People are told when a drawing is full.
+
+## Who is named in "Drawn by"
+In a shared drawing a person is named only if they account for at least **10%** of what is on the canvas (`CREDIT_MIN_PERCENT`), biggest first. The 10% bar stays the same however many people join.
+The share is measured as area of ink: strokes by length x width, shapes by outline (plus area when filled), text by size, a bucket fill counts as a fixed chunk; erasing and moving count for nothing. Undoing your strokes lowers your share. If nobody reaches 10% (e.g. 11+ people each drawing equally), the three biggest contributors are named.

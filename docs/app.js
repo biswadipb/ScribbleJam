@@ -23,7 +23,8 @@ const param = tg?.initDataUnsafe?.start_param || new URLSearchParams(location.se
 const mode = param[0] === 't' ? 'together' : 'solo';
 const token = param.slice(2);
 const initData = tg?.initData || 'dev';
-$('#mode').textContent = mode === 'together' ? '👥 together' : '✏️ alone';
+$('#mode').textContent = mode === 'together' ? '👥 together' : '';
+$('#mode').hidden = mode !== 'together';
 
 // ---------- state ----------
 const ops = [];                                   // everything drawn, in order (shared in a room)
@@ -37,6 +38,7 @@ let symmetry = 0;                                 // 0 off, 1 mirror left/right,
 let smooth = 0;                                   // stroke smoothing 0..10
 let fillShapes = false;
 let ws = null;
+let roomFull = false;
 let uiReady = false;
 const redoStack = [];                             // solo mode only (rooms keep it on the server)
 const liveOps = new Set();                        // strokes still being drawn (mine and other people's)
@@ -61,6 +63,44 @@ const TOOLS = [
 const cfg = Object.fromEntries(TOOLS.map((t) => [t.id, { size: t.size, op: t.op }]));   // each tool remembers its size + opacity
 const hasSize = (t) => cfg[t].size !== undefined;
 const COLORS = ['#000000', '#ffffff', '#e53935', '#fb8c00', '#fdd835', '#43a047', '#00acc1', '#1e88e5', '#5e35b1', '#d81b60', '#8d6e63', '#9e9e9e'];
+
+// ---------- saving your progress ----------
+// The drawing is kept on this phone until you clear it (or 7 days after the last change), so closing the
+// app, switching chats or a crash never loses it. In a shared room the server also keeps it while it is awake;
+// if the server forgot it (it sleeps when idle), the first person to come back re-seeds it from their saved copy.
+const SAVE_KEY = `sj1:${mode}:${token}`;
+const KEEP_MS = 7 * 24 * 3600 * 1000;
+const signedUsers = new Map();       // verified user records of everyone who drew here (kept for the credits)
+let saveEnabled = false, saveTimer = null, firstDirty = 0, saveWarned = false;
+function readSaved() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SAVE_KEY) || 'null');
+    if (!s || !Array.isArray(s.ops) || !Array.isArray(s.layers) || Date.now() - s.t > KEEP_MS) { localStorage.removeItem(SAVE_KEY); return null; }
+    return s;
+  } catch { return null; }
+}
+function saveNow() {
+  clearTimeout(saveTimer); saveTimer = null; firstDirty = 0;
+  if (!saveEnabled) return;
+  try {
+    if (!ops.length && layers.length === 1 && bg === '#ffffff' && sizeKey === 'square') { localStorage.removeItem(SAVE_KEY); return; }
+    localStorage.setItem(SAVE_KEY, JSON.stringify({ t: Date.now(), ops, layers, bg, size: sizeKey, users: [...signedUsers.values()] }, (k, v) => (k[0] === '_' ? undefined : v)));
+  } catch { if (!saveWarned) { saveWarned = true; toast('Could not auto-save this drawing (phone storage is full)'); } }
+}
+function scheduleSave() { // soon after you stop drawing, and at least every few seconds while you keep going
+  if (!saveEnabled) return;
+  const now = Date.now(); if (!firstDirty) firstDirty = now;
+  clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, Math.min(1000, Math.max(0, firstDirty + 5000 - now)));
+}
+addEventListener('pagehide', saveNow);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveNow(); });
+try { // tidy up drawings nobody came back to
+  for (let i = localStorage.length - 1; i >= 0; i--) {
+    const k = localStorage.key(i);
+    if (k?.startsWith('sj1:') && k !== SAVE_KEY) { const s = JSON.parse(localStorage.getItem(k) || '{}'); if (!s.t || Date.now() - s.t > KEEP_MS) localStorage.removeItem(k); }
+  }
+} catch {}
+const savedDrawing = readSaved();
 
 // ---------- helpers ----------
 const newId = () => Math.random().toString(36).slice(2, 10);
@@ -304,6 +344,7 @@ setInterval(() => { // a collaborator who vanished mid-stroke: close their strok
 // ---------- compositing the layers ----------
 let composeQueued = false;
 function compose() {
+  scheduleSave();
   if (composeQueued) return;
   composeQueued = true;
   requestAnimationFrame(() => { composeQueued = false; composeNow(); });
@@ -420,12 +461,29 @@ function connect() {
     const m = JSON.parse(e.data);
     if (m.t === 'init') {
       for (const o of [...liveOps]) endStroke(o);
+      // my own copy of the drawing: what is on screen right now (we may just have reconnected), else what was saved earlier
+      const mine = ops.length ? { ops: ops.map((o) => JSON.parse(JSON.stringify(o, (k, v) => (k[0] === '_' ? undefined : v)))), layers: layers.map((l) => ({ ...l })), bg, size: sizeKey, users: [...signedUsers.values()] } : savedDrawing;
       ops.length = 0; ops.push(...m.ops); layers = m.layers; ensureActive();
+      for (const x of m.users || []) signedUsers.set(x.u.id, x);
       setBg(m.bg, false); sizeKey = ''; setCanvasSize(m.size || 'square', false); peers(m.peers); renderLayersUI();
+      if (m.fresh && mine?.ops?.length) { // the server has no copy (it slept or restarted): offer ours
+        saveEnabled = false; // keep our saved copy untouched until the server has answered
+        send({ t: 'restore', ops: mine.ops, layers: mine.layers, bg: mine.bg, size: mine.size, users: mine.users || [] });
+        toast('Bringing your drawing back…');
+        setTimeout(() => { saveEnabled = true; scheduleSave(); }, 3000); // in case someone else restored first
+      } else { saveEnabled = true; scheduleSave(); }
     } else if (m.t === 'sync') {
       for (const o of [...liveOps]) endStroke(o);
-      ops.length = 0; ops.push(...m.ops); layers = m.layers; ensureActive(); renderAll(); renderLayersUI();
-    } else if (m.t === 'op') {
+      ops.length = 0; ops.push(...m.ops); layers = m.layers; ensureActive();
+      if (m.bg) setBg(m.bg, false);
+      if (m.size && m.size !== sizeKey) setCanvasSize(m.size, false); else renderAll();
+      renderLayersUI(); saveEnabled = true; scheduleSave();
+    } else if (m.t === 'user') signedUsers.set(m.user.u.id, m.user);
+    else if (m.t === 'full') {
+      const i = ops.findIndex((o) => o.id === m.id);
+      if (i >= 0) { const [o] = ops.splice(i, 1); liveOps.delete(o); delete o._cv; renderLayer(o.l); compose(); }
+      toast('This drawing is full - clear it or delete a layer to keep drawing');
+    } else if (m.t === 'roomfull') { roomFull = true; toast(`This drawing already has ${m.max} people - try again in a bit`); } else if (m.t === 'op') {
       ops.push(m.op);
       if (m.op.k === 'stroke') { startLive(m.op); compose(); } else { bakeOp(m.op); compose(); }
     } else if (m.t === 'pts') {
@@ -445,7 +503,7 @@ function connect() {
       ensureActive(); renderLayersUI(); compose();
     }
   };
-  ws.onclose = () => { toast('Disconnected - reconnecting…'); setTimeout(connect, 1500); };
+  ws.onclose = () => { if (roomFull) return; toast('Disconnected - reconnecting…'); setTimeout(connect, 1500); };
 }
 function peers(n) { $('#mode').textContent = `👥 ${n} drawing`; }
 function ensureActive() { if (!layerById(activeLayer)) activeLayer = layers[layers.length - 1].id; }
@@ -917,6 +975,13 @@ setBg(bg, false);
 document.querySelector('.csize[data-size=square]').classList.add('sel');
 
 // ---------- first paint ----------
+if (mode === 'solo' && savedDrawing) {
+  ops.push(...savedDrawing.ops); layers = savedDrawing.layers; ensureActive();
+  setBg(savedDrawing.bg || '#ffffff', false);
+  if (PRESETS[savedDrawing.size]) { sizeKey = savedDrawing.size; [W, H] = PRESETS[sizeKey]; document.querySelectorAll('.csize').forEach((b) => b.classList.toggle('sel', b.dataset.size === sizeKey)); }
+  setTimeout(() => toast('Welcome back - your drawing was saved'), 400);
+}
+if (mode === 'solo') saveEnabled = true;
 cv.width = W; cv.height = H; ov.width = W; ov.height = H;
 fit();
 document.querySelector('.tool[data-tool=pencil]').classList.add('on');

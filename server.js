@@ -13,7 +13,8 @@ if (!BOT_TOKEN && !DEV) {
 }
 
 const PUBLIC_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), 'docs');
-const MAX_OPS = 3000;
+const MAX_OPS = 3000;                                   // operations (strokes, fills, shapes...) one drawing can hold
+const MAX_PEOPLE = Number(process.env.MAX_PEOPLE) || 12; // people drawing in one shared room at once
 const SIZES = new Set(['square', 'portrait', 'landscape', 'wide', 'story']);
 const MAX_PTS = 20000; // numbers per stroke
 
@@ -109,10 +110,51 @@ function mentionOf(u) {
   return { text: name || `User ${u.id}`, userId: u.id, first_name: u.first_name || name || `User ${u.id}` };
 }
 
-// Everyone who drew in a shared room; otherwise just the person who finished it.
+// ---- who gets credit ----
+// A rough measure of how much of the picture one operation is: the area of ink it laid down.
+const WIDTH_OF = { pencil: 0.5, marker: 1.4, brush: 1.8, highlighter: 2.2 }; // everything else: the size itself
+const FILL_WEIGHT = 30000;       // a bucket fill covers a lot, but how much is unknown here: count it as a decent chunk
+const MIN_SHARE = (Number(process.env.CREDIT_MIN_PERCENT) || 10) / 100; // a person must account for this share to be named
+const mirrorCount = (sym) => (sym === 3 ? 4 : sym ? 2 : 1);
+function inkOf(o) {
+  if (o.k === 'stroke') {
+    if (o.tool === 'eraser') return 0; // erasing is not drawing
+    const w = o.size * (WIDTH_OF[o.tool] ?? 1);
+    let len = 0;
+    for (let i = 2; i < o.pts.length; i += 2) len += Math.hypot(o.pts[i] - o.pts[i - 2], o.pts[i + 1] - o.pts[i - 1]);
+    return (len + w) * w * mirrorCount(o.sym);
+  }
+  if (o.k === 'shape') {
+    const dx = Math.abs(o.x2 - o.x1), dy = Math.abs(o.y2 - o.y1);
+    const outline = (o.shape === 'line' ? Math.hypot(dx, dy) : 2 * (dx + dy)) * o.size;
+    return (outline + (o.f && o.shape !== 'line' ? dx * dy : 0)) * mirrorCount(o.sym);
+  }
+  if (o.k === 'text') return o.text.length * o.size * o.size * 0.5;
+  if (o.k === 'fill') return FILL_WEIGHT;
+  return 0; // moves don't add anything
+}
+
+// Who the picture is credited to ("Drawn by ..." on the image and in the caption).
+// Alone: the person who finished it. In a shared room: everyone whose share of what is on the canvas
+// is at least MIN_SHARE (10%), biggest contribution first. The bar stays 10% however many people join.
+// If nobody reaches it (many people each drawing a little), the three biggest contributors are named.
 function artists(token, finisher, mode) {
   const room = mode === 'together' ? rooms.get(token) : null;
-  const list = room ? [...new Set(room.ops.map((o) => o.u))].map((id) => room.users.get(id)).filter(Boolean) : [];
+  if (!room) return [finisher];
+  const ink = new Map();
+  let total = 0;
+  for (const o of room.ops) {
+    const w = inkOf(o);
+    if (w > 0) { ink.set(o.u, (ink.get(o.u) || 0) + w); total += w; }
+  }
+  if (!total) { // only moves / erasing so far: whoever touched it
+    const who = [...new Set(room.ops.map((o) => o.u))].map((id) => room.users.get(id)).filter(Boolean);
+    return who.length ? who : [finisher];
+  }
+  const ranked = [...ink.entries()].sort((x, y) => y[1] - x[1]);
+  let chosen = ranked.filter(([, w]) => w / total >= MIN_SHARE);
+  if (!chosen.length) chosen = ranked.slice(0, 3);
+  const list = chosen.map(([id]) => room.users.get(id)).filter(Boolean);
   return list.length ? list : [finisher];
 }
 
@@ -297,6 +339,19 @@ const num = (v, lo, hi, d) => (Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)
 const colour = (c) => (typeof c === 'string' && /^#[0-9a-fA-F]{6}$/.test(c) ? c : '#000000');
 const newLayer = (id, name = 'Layer') => ({ id, name, visible: true, opacity: 1, blend: 'source-over' });
 
+// A user record the server signs when it hands it out, so a client can later bring it back (restoring a
+// drawing after the server slept) without being able to invent names for the "Drawn by" credits.
+const userSecret = 'users:' + (BOT_TOKEN || 'dev');
+function signUser(u) {
+  const c = { id: u.id, first_name: u.first_name || '', last_name: u.last_name || '', username: u.username || '' };
+  return { u: c, sig: crypto.createHmac('sha256', userSecret).update(JSON.stringify(c)).digest('base64url').slice(0, 16) };
+}
+function verifyUser(x) {
+  if (!x || typeof x.sig !== 'string' || !x.u || !Number.isFinite(x.u.id)) return null;
+  const e = signUser(x.u);
+  return e.sig === x.sig ? x.u : null;
+}
+
 function cleanLayer(l, id) {
   return {
     id,
@@ -343,14 +398,23 @@ function onConnect(ws, user, token) {
   if (!room) {
     rooms.set(token, (room = {
       ops: [], layers: [newLayer('L1', 'Layer 1')], redo: new Map(), bg: '#ffffff', size: 'square',
-      clients: new Set(), users: new Map(), version: 0, posted: -1,
+      clients: new Set(), users: new Map(), version: 0, posted: -1, touched: false, lastSeen: Date.now(),
     }));
   }
+  if (room.clients.size >= MAX_PEOPLE) { // keep the free server healthy: a room holds MAX_PEOPLE people
+    ws.send(JSON.stringify({ t: 'roomfull', max: MAX_PEOPLE }));
+    return ws.close();
+  }
   room.users.set(user.id, user);
+  room.lastSeen = Date.now();
   const me = { ws, uid: user.id };
   room.clients.add(me);
-  ws.send(JSON.stringify({ t: 'init', ops: room.ops, layers: room.layers, bg: room.bg, size: room.size, peers: room.clients.size }));
+  ws.send(JSON.stringify({
+    t: 'init', ops: room.ops, layers: room.layers, bg: room.bg, size: room.size, peers: room.clients.size,
+    fresh: !room.touched, users: [...room.users.values()].map(signUser),
+  }));
   broadcast(room, { t: 'peers', n: room.clients.size });
+  broadcast(room, { t: 'user', user: signUser(user) }, ws);
 
   const findOp = (id) => { for (let i = room.ops.length - 1; i >= 0; i--) if (room.ops[i].id === id) return room.ops[i]; return null; };
 
@@ -358,10 +422,10 @@ function onConnect(ws, user, token) {
     let m; try { m = JSON.parse(raw); } catch { return; }
     switch (m.t) {
       case 'op': { // a stroke starts (points follow), or a fill / shape / text / move arrives whole
-        if (room.ops.length >= MAX_OPS) return;
+        if (room.ops.length >= MAX_OPS) { ws.send(JSON.stringify({ t: 'full', id: m.op?.id })); return; }
         const o = cleanOp(m.op, room.layers);
         if (!o) return;
-        o.u = me.uid;
+        o.u = me.uid; room.touched = true;
         room.ops.push(o); room.version++;
         room.redo.set(me.uid, []); // a new action ends the redo history
         broadcast(room, { t: 'op', op: o }, ws);
@@ -401,11 +465,31 @@ function onConnect(ws, user, token) {
         broadcast(room, { t: 'insert', op: item.op, index });
         break;
       }
-      case 'clear': room.version++; room.ops = []; room.redo = new Map(); broadcast(room, { t: 'clear' }); break;
-      case 'bg': if (m.bg === 'transparent' || /^#[0-9a-fA-F]{6}$/.test(m.bg)) { room.bg = m.bg; room.version++; broadcast(room, { t: 'bg', bg: m.bg }); } break;
-      case 'size': if (SIZES.has(m.size)) { room.size = m.size; room.version++; broadcast(room, { t: 'size', size: m.size }); } break;
+      case 'restore': { // the server forgot this drawing (it slept / restarted): bring it back from a participant's saved copy
+        if (room.touched || room.ops.length || !Array.isArray(m.layers) || !Array.isArray(m.ops)) return;
+        const layers = [];
+        for (const l of m.layers.slice(0, MAX_LAYERS)) if (typeof l?.id === 'string' && l.id.length <= 12 && !layers.some((x) => x.id === l.id)) layers.push(cleanLayer(l, l.id));
+        if (!layers.length) return;
+        const trusted = new Set([me.uid]);
+        for (const x of Array.isArray(m.users) ? m.users.slice(0, 100) : []) { const u = verifyUser(x); if (u) { trusted.add(u.id); if (!room.users.has(u.id)) room.users.set(u.id, { id: u.id, first_name: u.first_name || undefined, last_name: u.last_name || undefined, username: u.username || undefined }); } }
+        const ops = [];
+        for (const raw of m.ops.slice(0, MAX_OPS)) {
+          const o = cleanOp(raw, layers);
+          if (!o) continue;
+          o.u = trusted.has(raw.u) ? raw.u : me.uid;
+          ops.push(o);
+        }
+        room.layers = layers; room.ops = ops; room.touched = true; room.version++;
+        if (m.bg === 'transparent' || /^#[0-9a-fA-F]{6}$/.test(m.bg)) room.bg = m.bg;
+        if (SIZES.has(m.size)) room.size = m.size;
+        broadcast(room, { t: 'sync', ops: room.ops, layers: room.layers, bg: room.bg, size: room.size });
+        break;
+      }
+      case 'clear': room.touched = true; room.version++; room.ops = []; room.redo = new Map(); broadcast(room, { t: 'clear' }); break;
+      case 'bg': if (m.bg === 'transparent' || /^#[0-9a-fA-F]{6}$/.test(m.bg)) { room.bg = m.bg; room.touched = true; room.version++; broadcast(room, { t: 'bg', bg: m.bg }); } break;
+      case 'size': if (SIZES.has(m.size)) { room.size = m.size; room.touched = true; room.version++; broadcast(room, { t: 'size', size: m.size }); } break;
       case 'layer': {
-        const L = room.layers;
+        const L = room.layers; room.touched = true;
         if (m.act === 'add') {
           if (L.length >= MAX_LAYERS || typeof m.layer?.id !== 'string' || m.layer.id.length > 12 || L.some((x) => x.id === m.layer.id)) return;
           const layer = cleanLayer(m.layer, m.layer.id);
@@ -434,6 +518,7 @@ function onConnect(ws, user, token) {
   });
 
   ws.on('close', () => {
+    room.lastSeen = Date.now();
     room.clients.delete(me);
     broadcast(room, { t: 'peers', n: room.clients.size });
   });
@@ -443,6 +528,8 @@ function onConnect(ws, user, token) {
 setInterval(() => {
   const now = Date.now();
   for (const [id, it] of images) if (it.exp < now) images.delete(id);
+  // forget rooms nobody has been in for a day (clients keep their own saved copy and can bring it back)
+  for (const [tok, room] of rooms) if (room.clients.size === 0 && now - room.lastSeen > 24 * 3600_000) rooms.delete(tok);
 }, 60_000).unref();
 
 server.listen(PORT, async () => {
