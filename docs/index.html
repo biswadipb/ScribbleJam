@@ -119,6 +119,10 @@
   #pkPrev { width: 40px; height: 40px; border-radius: 10px; flex: none; border: 2px solid var(--bg2); }
   #hexIn, #textIn, #fontSel { font: inherit; color: var(--text); background: var(--bg2); border: 0; border-radius: 10px; padding: 10px; width: 100%; }
   .sheet button.primary { text-align: center; }
+  .dlg { align-items: center; justify-content: center; z-index: 40; }
+  .dlg .card { width: min(92vw, 360px); border-radius: 16px; padding-bottom: 14px; }
+  #dText { color: var(--hint); font-size: 14px; }
+  #dInput { font: inherit; color: var(--text); background: var(--bg2); border: 0; border-radius: 10px; padding: 10px; width: 100%; }
   .row.scroll, .bar { scrollbar-width: none; }
   .row.scroll::-webkit-scrollbar, .bar::-webkit-scrollbar { display: none; }
   .badge { white-space: nowrap; }
@@ -187,6 +191,12 @@
   <h4>Colour</h4>
   <div class="row scroll" id="cpalette"></div>
   <button data-act="done" class="primary">Done</button>
+</div></div>
+<div id="dsheet" class="sheet dlg"><div class="card">
+  <h3 id="dTitle"></h3>
+  <div id="dText"></div>
+  <input id="dInput" maxlength="20" hidden>
+  <div class="row"><button id="dCancel">Cancel</button><button id="dOk" class="primary" style="flex:1">OK</button></div>
 </div></div>
 <div id="lsheet" class="sheet"><div class="card">
   <h3>Layers 📚</h3>

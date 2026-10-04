@@ -20,17 +20,18 @@ For real Telegram testing locally, run a tunnel (`cloudflared tunnel --url http:
 - Each tool (pencil, pen, brush, eraser) has its own adjustable size; the bucket has none.
 
 ## Skipping Render's "service waking up" screen
-The Mini App page lives in `docs/`. If it is served by the Render service itself, Telegram users see Render's own
-wake-up screen whenever the free service has been idle. To show the ScribbleJam loading screen instead, host `docs/`
-on GitHub Pages (always on, free) and let it wake the server:
-1. In `docs/config.js` set `window.SJ_API = 'https://<your-service>.onrender.com'`.
-2. Repo **Settings → Pages**: source `main`, folder `/docs`. You get `https://<user>.github.io/ScribbleJam/`.
-3. @BotFather → `/myapps` → ScribbleJam → **Edit Web App URL** → the Pages URL.
-4. Keep `PUBLIC_URL` on Render as the Render address (the webhook and story images still use it).
+The Mini App page lives in `docs/`. If it is served by the Render web service itself, people see Render's own
+wake-up screen whenever the free service has been idle. To show the ScribbleJam loading screen instead, serve `docs/`
+from a host that never sleeps and let it wake the server. A **Render Static Site** is free, always on, and gives a
+neutral address (`https://<name>.onrender.com`) that does not contain anyone's personal username:
+1. In `docs/config.js` set `window.SJ_API = 'https://<your-web-service>.onrender.com'`.
+2. Render → **New → Static Site** → pick this repo, *Publish directory* `docs`, leave the build command empty.
+3. On the Render **web service** set the env var `WEBAPP_URL` to the static site's address (DMs open the canvas from it).
+4. @BotFather → `/myapps` → ScribbleJam → **Edit Web App URL** → the same address.
+5. Keep `PUBLIC_URL` on the web service as its own address (webhook and story images use it).
 
 Draw-alone opens instantly (the server wakes in the background); draw-together shows the splash until it is awake.
-- Canvas: starts as a white standard square (1024×1024). 🖼️ Canvas lets you pick Square, Portrait, Landscape, Wide or Story, and any background colour or none (transparent). In a shared room, size and colour change for everyone.
-- After Finish: send to another chat (Telegram share dialog, needs Telegram 8.0+), share to other apps, save the image, post to story, or make a sticker. Every picture carries a deep purple "Drawn by <names>" footer with the ScribbleJam logo (never on stickers).
+The app uses its own dialogs instead of the browser's `confirm()` / `prompt()` boxes, because those print the page's web address.
 
 ## Drawing tools
 - **Brushes:** pencil, ink pen, marker, soft brush, airbrush, chalk, highlighter and an eraser, each with its own size and opacity. Pen pressure is used when the device reports it.

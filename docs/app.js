@@ -764,11 +764,28 @@ $('#tsheet').addEventListener('click', (e) => {
   }
 });
 
+// ----- our own dialogs: the browser's confirm()/prompt() boxes show the page's web address -----
+function ask({ title = '', text = '', ok = 'OK', cancel = 'Cancel', input = null } = {}) {
+  return new Promise((resolve) => {
+    const sh = $('#dsheet'), inp = $('#dInput');
+    $('#dTitle').textContent = title; $('#dText').textContent = text; $('#dText').hidden = !text;
+    inp.hidden = input === null; if (input !== null) inp.value = input;
+    $('#dOk').textContent = ok; $('#dCancel').textContent = cancel;
+    const done = (v) => { sh.classList.remove('show'); $('#dOk').onclick = $('#dCancel').onclick = sh.onclick = inp.onkeydown = null; resolve(v); };
+    const yes = () => done(input === null ? true : inp.value), no = () => done(input === null ? false : null);
+    $('#dOk').onclick = yes; $('#dCancel').onclick = no;
+    sh.onclick = (e) => { if (e.target === sh) no(); };
+    inp.onkeydown = (e) => { if (e.key === 'Enter') yes(); };
+    sh.classList.add('show');
+    if (input !== null) setTimeout(() => { inp.focus(); inp.select(); }, 50);
+  });
+}
+
 // ----- undo / redo / clear -----
 $('#undo').addEventListener('click', undo);
 $('#redo').addEventListener('click', redo);
-$('#clear').addEventListener('click', () => {
-  if (!confirm(mode === 'together' ? 'Clear the whole drawing, on every layer, for everyone?' : 'Clear the whole drawing?')) return;
+$('#clear').addEventListener('click', async () => {
+  if (!(await ask({ title: 'Clear everything?', text: mode === 'together' ? 'This wipes the whole drawing, on every layer, for everyone.' : 'This wipes the whole drawing, on every layer.', ok: 'Clear' }))) return;
   cancelSelection();
   if (mode === 'together') send({ t: 'clear' }); else { for (const o of [...liveOps]) liveOps.delete(o); ops.length = 0; redoStack.length = 0; renderAll(); }
 });
@@ -798,7 +815,7 @@ function renderLayersUI() {
   $('#addLayer').disabled = layers.length >= 8;
 }
 function layerChanged(L, props) { Object.assign(L, props); if (mode === 'together') send({ t: 'layer', act: 'upd', id: L.id, props }); compose(); }
-lsheet.addEventListener('click', (e) => {
+lsheet.addEventListener('click', async (e) => {
   if (e.target === lsheet || e.target.dataset.act === 'done') return lsheet.classList.remove('show');
   const row = e.target.closest('.lrow'), a = e.target.dataset.a;
   if (e.target.id === 'addLayer') {
@@ -811,7 +828,7 @@ lsheet.addEventListener('click', (e) => {
   }
   if (!row || !a) return;
   const L = layerById(row.dataset.id), i = layers.indexOf(L);
-  if (a === 'pick') { if (activeLayer === L.id) { const n = prompt('Layer name', L.name); if (n?.trim()) layerChanged(L, { name: n.trim().slice(0, 20) }); } else { applySelection(); activeLayer = L.id; } }
+  if (a === 'pick') { if (activeLayer === L.id) { const n = await ask({ title: 'Layer name', input: L.name, ok: 'Save' }); if (n?.trim()) layerChanged(L, { name: n.trim().slice(0, 20) }); } else { applySelection(); activeLayer = L.id; } }
   else if (a === 'eye') layerChanged(L, { visible: !L.visible });
   else if (a === 'up' || a === 'down') {
     const j = a === 'up' ? i + 1 : i - 1;
@@ -820,7 +837,7 @@ lsheet.addEventListener('click', (e) => {
     if (mode === 'together') send({ t: 'layer', act: 'order', ids: layers.map((x) => x.id) });
     compose();
   } else if (a === 'del') {
-    if (layers.length < 2 || !confirm(`Delete "${L.name}" and everything drawn on it?`)) return;
+    if (layers.length < 2 || !(await ask({ title: 'Delete layer?', text: `"${L.name}" and everything drawn on it will be removed.`, ok: 'Delete' }))) return;
     applySelection();
     if (mode === 'together') { send({ t: 'layer', act: 'del', id: L.id }); return; } // the server answers with a fresh copy for everyone
     for (let k = ops.length - 1; k >= 0; k--) if (ops[k].l === L.id) { liveOps.delete(ops[k]); ops.splice(k, 1); }
@@ -872,10 +889,10 @@ const csheet = $('#csheet');
 $('#bg').addEventListener('click', () => csheet.classList.add('show'));
 csheet.addEventListener('click', (e) => { if (e.target === csheet || e.target.dataset.act === 'done') csheet.classList.remove('show'); });
 
-document.querySelectorAll('.csize').forEach((b) => b.addEventListener('click', () => {
+document.querySelectorAll('.csize').forEach((b) => b.addEventListener('click', async () => {
   const key = b.dataset.size;
   if (key === sizeKey) return;
-  if (ops.length && !confirm((mode === 'together' ? 'Everyone will get a new canvas size. ' : '') + 'Parts of the drawing outside the new size will be cropped. Continue?')) return;
+  if (ops.length && !(await ask({ title: 'Change canvas size?', text: (mode === 'together' ? 'Everyone will get the new size. ' : '') + 'Parts of the drawing outside the new size will be cropped.', ok: 'Change' }))) return;
   applySelection();
   setCanvasSize(key);
 }));
