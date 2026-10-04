@@ -83,9 +83,9 @@ const tgApi = bot ? bot.api : DEV ? {
   sendDocument: async (chat, _f, o) => console.log('DEV sendDocument', JSON.stringify(o.caption)),
 } : null;
 
-// Where the Mini App page lives (set WEBAPP_URL to a host that never sleeps; falls back to PUBLIC_URL). Private chats open it with a web_app
+// Where the Mini App page lives (set WEBAPP_URL to a host that never sleeps; defaults to the GitHub Pages site, never the sleepy Render address). Private chats open it with a web_app
 // button, which has no sleepy-server wait and no choice to make: a DM is always a one-person canvas.
-const WEBAPP_URL = (process.env.WEBAPP_URL || PUBLIC_URL || '').replace(/\/?$/, '/');
+const WEBAPP_URL = (process.env.WEBAPP_URL || 'https://biswadipb.github.io/ScribbleJam/').replace(/\/?$/, '/');
 
 async function sendDrawPrompt(ctx) {
   if (ctx.chat.type === 'private') {
