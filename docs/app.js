@@ -296,16 +296,65 @@ setBg(bg, false);
 document.querySelector('.csize[data-size=square]').classList.add('sel');
 
 // ---------- export ----------
-// scale: 1 = full canvas; background: a colour or null for transparent.
-function exportPng(scale, background) {
+const me = tg?.initDataUnsafe?.user;
+const myName = me ? [me.first_name, me.last_name].filter(Boolean).join(' ') || me.username || 'Someone' : 'Someone';
+
+// Names of everyone who drew (shared room) or just you (alone).
+async function artistNames() {
+  if (mode !== 'together') return [myName];
+  try {
+    if (!serverUp) await ready;
+    const r = await fetch(`${API}/api/artists`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ initData, token, mode }),
+    });
+    const j = await r.json();
+    if (r.ok && j.names?.length) return j.names;
+  } catch {}
+  return [myName];
+}
+
+function joinNames(names, max = 3) {
+  const list = names.length > max ? [...names.slice(0, max), `${names.length - max} more`] : names;
+  return list.length < 2 ? list[0] : `${list.slice(0, -1).join(', ')} & ${list.at(-1)}`;
+}
+const tagLine = (names) => `Drawn with ScribbleJam by ${joinNames(names)}`;
+
+// Small unobtrusive credit in the bottom-right corner, like a saved-image watermark.
+function drawTag(c, w, h, names) {
+  let fs = Math.max(11, Math.round(Math.min(w, h) * 0.028));
+  const maxW = w * 0.72;
+  let text = tagLine(names);
+  const setFont = () => (c.font = `600 ${fs}px system-ui, -apple-system, "Segoe UI", sans-serif`);
+  setFont();
+  while (c.measureText(text).width > maxW && fs > 9) { fs -= 1; setFont(); }
+  while (c.measureText(text).width > maxW && text.length > 12) text = text.slice(0, -2).trimEnd() + '…';
+  const padX = fs * 0.7, padY = fs * 0.45, m = fs * 0.9;
+  const bw = c.measureText(text).width + padX * 2, bh = fs + padY * 2;
+  const x = w - m - bw, y = h - m - bh, r = bh / 2;
+  c.save();
+  c.fillStyle = 'rgba(20,20,40,0.55)';
+  c.beginPath();
+  c.moveTo(x + r, y); c.arcTo(x + bw, y, x + bw, y + bh, r); c.arcTo(x + bw, y + bh, x, y + bh, r);
+  c.arcTo(x, y + bh, x, y, r); c.arcTo(x, y, x + bw, y, r); c.closePath(); c.fill();
+  c.fillStyle = 'rgba(255,255,255,0.95)';
+  c.textBaseline = 'middle';
+  c.fillText(text, x + padX, y + bh / 2 + fs * 0.04);
+  c.restore();
+}
+
+// scale: 1 = full canvas; background: a colour or null for transparent; names: adds the credit tag.
+function exportImage(scale, background, names = null, type = 'image/png') {
   const out = document.createElement('canvas');
   out.width = Math.round(W * scale); out.height = Math.round(H * scale);
   const c = out.getContext('2d');
   if (background) { c.fillStyle = background; c.fillRect(0, 0, out.width, out.height); }
   c.drawImage(cv, 0, 0, out.width, out.height);
-  return out.toDataURL('image/png');
+  if (names) drawTag(c, out.width, out.height, names);
+  return out.toDataURL(type, 0.92);
 }
 const solidBg = () => (bg === 'transparent' ? '#ffffff' : bg);
+const keepBg = () => (bg === 'transparent' ? null : bg);
 
 async function api(action, png, extra = {}) {
   if (!serverUp) { toast('Waking the server up… one moment'); await ready; }
@@ -319,24 +368,60 @@ async function api(action, png, extra = {}) {
   return j;
 }
 
+async function saveImage(names) {
+  const png = exportImage(1, keepBg(), names);
+  if (tg?.downloadFile && tg.isVersionAtLeast?.('8.0')) {
+    const { url } = await api('host', png);
+    tg.downloadFile({ url, file_name: 'ScribbleJam.png' }, (ok) => toast(ok ? 'Saved 💾' : 'Save cancelled'));
+    return;
+  }
+  const a = document.createElement('a');
+  a.href = png; a.download = 'ScribbleJam.png';
+  document.body.appendChild(a); a.click(); a.remove();
+  toast('Saving…');
+}
+
+async function shareToApps(names) {
+  const blob = await (await fetch(exportImage(1, keepBg(), names))).blob();
+  const file = new File([blob], 'ScribbleJam.png', { type: 'image/png' });
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], text: names ? tagLine(names) : 'Drawn with ScribbleJam' }); }
+    catch (e) { if (e.name !== 'AbortError') throw e; }
+    return;
+  }
+  toast('Sharing is not available here - saving instead');
+  await saveImage(names);
+}
+
 const sheet = $('#sheet');
-$('#share').addEventListener('click', () => sheet.classList.add('show'));
+let namesP = Promise.resolve([myName]);
+$('#share').addEventListener('click', () => { namesP = artistNames(); sheet.classList.add('show'); });
 sheet.addEventListener('click', async (e) => {
   if (e.target === sheet) return sheet.classList.remove('show');
+  if (e.target.closest('label')) return; // the credit-tag checkbox
   const act = e.target.closest('button')?.dataset.act;
   if (!act) return;
   sheet.classList.remove('show');
   if (act === 'close') return;
   try {
+    const names = $('#tagToggle').checked && !act.startsWith('sticker') ? await namesP : null;
     if (act === 'print') {
-      await api('print', exportPng(1, bg === 'transparent' ? null : bg), { bg: bg === 'transparent' ? 'transparent' : 'solid' });
+      await api('print', exportImage(1, keepBg(), names), { bg: bg === 'transparent' ? 'transparent' : 'solid' });
       toast('Sent to the chat 🎉');
+    } else if (act === 'forward') {
+      if (!(tg?.shareMessage && tg.isVersionAtLeast?.('8.0'))) { toast('Update Telegram to send to other chats - sharing to apps instead'); return shareToApps(names); }
+      const { id } = await api('prepare', exportImage(1, solidBg(), names, 'image/jpeg'), { w: W, h: H });
+      tg.shareMessage(id, (ok) => ok && toast('Shared ✅'));
+    } else if (act === 'apps') {
+      await shareToApps(names);
+    } else if (act === 'save') {
+      await saveImage(names);
     } else if (act === 'story') {
-      const { url } = await api('story', exportPng(1, solidBg()));
-      if (tg?.shareToStory && tg.isVersionAtLeast?.('7.8')) tg.shareToStory(url, { text: '🎨' });
+      const { url } = await api('story', exportImage(1, solidBg(), names));
+      if (tg?.shareToStory && tg.isVersionAtLeast?.('7.8')) tg.shareToStory(url, { text: names ? tagLine(names) : '🎨' });
       else toast('Your Telegram is too old for stories - please update it');
     } else {
-      const { link } = await api('sticker', exportPng(512 / Math.max(W, H), act === 'sticker-white' ? solidBg() : null));
+      const { link } = await api('sticker', exportImage(512 / Math.max(W, H), act === 'sticker-white' ? solidBg() : null));
       toast('Sticker added! 🏷️');
       if (tg?.openTelegramLink) tg.openTelegramLink(link); else window.open(link);
     }

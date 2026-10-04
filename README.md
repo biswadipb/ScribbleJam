@@ -30,3 +30,4 @@ on GitHub Pages (always on, free) and let it wake the server:
 
 Draw-alone opens instantly (the server wakes in the background); draw-together shows the splash until it is awake.
 - Canvas: starts as a white standard square (1024×1024). 🖼️ Canvas lets you pick Square, Portrait, Landscape, Wide or Story, and any background colour or none (transparent). In a shared room, size and colour change for everyone.
+- Finishing: send to the chat, send to another chat (Telegram share dialog, needs Telegram 8.0+), share to other apps / save image, post to story, or make a sticker. A small "Drawn with ScribbleJam by <names>" credit sits in the bottom-right corner of exported images (can be switched off in the Finish sheet; never added to stickers).

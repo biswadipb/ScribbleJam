@@ -56,6 +56,8 @@
   #sheet .card, #csheet .card { background: var(--bg); width: 100%; border-radius: 16px 16px 0 0; padding: 14px; display: grid; gap: 8px; padding-bottom: calc(14px + env(safe-area-inset-bottom)); }
   #sheet h3, #csheet h3 { margin: 0 0 4px; }
   #sheet button { text-align: left; padding: 12px; }
+  #sheet .card { max-height: 92vh; overflow-y: auto; }
+  label.tag { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--hint); padding: 2px 2px 6px; }
   #csheet .sw { width: 34px; height: 34px; }
   #toast { position: fixed; left: 50%; top: 60px; transform: translateX(-50%); background: #222; color: #fff; padding: 8px 14px; border-radius: 20px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90%; text-align: center; }
   #toast.show { opacity: 1; }
@@ -104,7 +106,11 @@
 
 <div id="sheet"><div class="card">
   <h3>Finished? 🎉</h3>
-  <button data-act="print">🖼️ Send picture to the chat</button>
+  <label class="tag"><input type="checkbox" id="tagToggle" checked> Add a small “Drawn with ScribbleJam by …” credit</label>
+  <button data-act="print">🖼️ Send picture to this chat</button>
+  <button data-act="forward">↗️ Send to another chat…</button>
+  <button data-act="apps">📤 Share to other apps…</button>
+  <button data-act="save">💾 Save image</button>
   <button data-act="story">📱 Post to my story</button>
   <button data-act="sticker-white">🏷️ Make a sticker (with canvas colour)</button>
   <button data-act="sticker-clear">🏷️ Make a sticker (no background)</button>

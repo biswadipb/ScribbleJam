@@ -85,6 +85,9 @@ function artists(token, finisher, mode) {
   return list.length ? list : [finisher];
 }
 
+// Full display name (no @), used for the "Drawn with ScribbleJam by ..." tag on images.
+const fullName = (u) => [u.first_name, u.last_name].filter(Boolean).join(' ') || u.username || 'Someone';
+
 function doodleCaption(users) {
   const names = users.map(label);
   const who = names.length < 2 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`;
@@ -97,10 +100,13 @@ async function handleExport(body) {
   if (!user) return [401, { error: 'bad initData' }];
   const session = getSession(body.token);
   if (!session) return [410, { error: 'This drawing session expired. Send /draw again.' }];
-  const m = /^data:image\/png;base64,(.+)$/.exec(body.png || '');
-  if (!m) return [400, { error: 'png required' }];
-  const buf = Buffer.from(m[1], 'base64');
-  if (buf.length < 8 || buf.readUInt32BE(0) !== 0x89504e47) return [400, { error: 'not a png' }];
+  const m = /^data:image\/(png|jpeg);base64,(.+)$/.exec(body.png || '');
+  if (!m) return [400, { error: 'image required' }];
+  const buf = Buffer.from(m[2], 'base64');
+  const isPng = buf.length > 8 && buf.readUInt32BE(0) === 0x89504e47;
+  const isJpeg = buf.length > 4 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff;
+  // Telegram only accepts JPEG for photos shared through "send to another chat"
+  if (body.action === 'prepare' ? !isJpeg : !isPng) return [400, { error: 'wrong image type' }];
 
   const name = user.first_name || 'Someone';
 
@@ -115,10 +121,28 @@ async function handleExport(body) {
     return [200, { ok: true }];
   }
 
-  if (body.action === 'story') {
+  // 'story' and 'host' just publish the image at a short-lived public URL (story sharing, downloads).
+  if (body.action === 'story' || body.action === 'host') {
     const id = rand(8);
-    images.set(id, { buf, exp: Date.now() + 10 * 60_000 });
+    images.set(id, { buf, type: 'image/png', exp: Date.now() + 30 * 60_000 });
     return [200, { url: `${PUBLIC_URL}/img/${id}.png` }];
+  }
+
+  // Lets the Mini App call Telegram's share dialog so the user can send the doodle to any chat.
+  if (body.action === 'prepare') {
+    const id = rand(8);
+    images.set(id, { buf, type: 'image/jpeg', exp: Date.now() + 2 * 3600_000 });
+    const url = `${PUBLIC_URL}/img/${id}.jpg`;
+    const prepared = await bot.api.savePreparedInlineMessage(
+      user.id,
+      {
+        type: 'photo', id: `sj${id}`, photo_url: url, thumbnail_url: url,
+        photo_width: Number(body.w) || undefined, photo_height: Number(body.h) || undefined,
+        caption: doodleCaption(artists(body.token, user, body.mode)),
+      },
+      { allow_user_chats: true, allow_bot_chats: true, allow_group_chats: true, allow_channel_chats: true },
+    );
+    return [200, { id: prepared.id }];
   }
 
   if (body.action === 'sticker') {
@@ -159,6 +183,18 @@ const server = http.createServer(async (req, res) => {
   try {
     if (req.method === 'POST' && tgHandler && url.pathname === `/tg/${webhookSecret}`) return tgHandler(req, res);
 
+    if (req.method === 'POST' && url.pathname === '/api/artists') {
+      let status = 200, out;
+      try {
+        const body = await readJson(req, 100_000);
+        const user = verifyInitData(body.initData);
+        if (!user || !getSession(body.token)) [status, out] = [401, { error: 'bad session' }];
+        else out = { names: artists(body.token, user, body.mode).map(fullName) };
+      } catch { [status, out] = [400, { error: 'bad request' }]; }
+      res.writeHead(status, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(out));
+    }
+
     if (req.method === 'POST' && url.pathname === '/api/export') {
       let status, out;
       try { [status, out] = await handleExport(await readJson(req)); }
@@ -167,11 +203,11 @@ const server = http.createServer(async (req, res) => {
       return res.end(JSON.stringify(out));
     }
 
-    const img = /^\/img\/([a-f0-9]+)\.png$/.exec(url.pathname);
+    const img = /^\/img\/([a-f0-9]+)\.(?:png|jpg)$/.exec(url.pathname);
     if (img) {
       const it = images.get(img[1]);
       if (!it || it.exp < Date.now()) { res.writeHead(404); return res.end(); }
-      res.writeHead(200, { 'content-type': 'image/png' });
+      res.writeHead(200, { 'content-type': it.type || 'image/png', 'cache-control': 'public, max-age=3600' });
       return res.end(it.buf);
     }
 
